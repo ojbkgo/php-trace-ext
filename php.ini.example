@@ -1,0 +1,14 @@
+; PHP Trace Extension 配置示例
+
+; 启用trace扩展
+extension=trace.so
+
+; 基础配置
+trace.enabled = 1
+
+; Debug配置（开发环境使用）
+trace.debug_enabled = 1
+trace.debug_log_path = /tmp/php_trace_debug.log
+
+; 生产环境建议关闭debug
+; trace.debug_enabled = 0
