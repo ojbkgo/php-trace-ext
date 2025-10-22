@@ -88,18 +88,49 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_trace_add_tag, 0, 0, 2)
     ZEND_ARG_INFO(0, value)
 ZEND_END_ARG_INFO()
 
-// Debug日志函数（临时写死开启，方便调试）
+// Debug日志函数（通过INI配置控制）
 void trace_debug_log(const char *format, ...)
 {
-    // 临时写死：强制开启debug，方便调试
+    int debug_enabled = 0;
     const char *log_file = "/tmp/php_trace_debug.log";
+    
+    // 从全局变量读取配置
+#ifdef ZTS
+    if (trace_globals_id) {
+        zend_trace_globals *tg = TSRMG(trace_globals_id, zend_trace_globals *, );
+        if (tg && tg->debug_enabled) {
+            debug_enabled = 1;
+            if (tg->debug_log_path) {
+                log_file = ZSTR_VAL(tg->debug_log_path);
+            }
+        }
+    }
+#else
+    if (trace_globals.debug_enabled) {
+        debug_enabled = 1;
+        if (trace_globals.debug_log_path) {
+            log_file = ZSTR_VAL(trace_globals.debug_log_path);
+        }
+    }
+#endif
+    
+    // 环境变量备用
+    if (!debug_enabled) {
+        char *env_debug = getenv("PHP_TRACE_DEBUG");
+        if (env_debug && strcmp(env_debug, "1") == 0) {
+            debug_enabled = 1;
+        }
+    }
+    
+    if (!debug_enabled) {
+        return;
+    }
     
     FILE *fp = fopen(log_file, "a");
     if (fp) {
         va_list args;
         va_start(args, format);
         
-        // 添加时间戳和进程信息
         struct timeval tv;
         gettimeofday(&tv, NULL);
         fprintf(fp, "[%ld.%06d][PID:%d] ", (long)tv.tv_sec, (int)tv.tv_usec, getpid());
