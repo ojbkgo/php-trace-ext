@@ -88,33 +88,11 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_trace_add_tag, 0, 0, 2)
     ZEND_ARG_INFO(0, value)
 ZEND_END_ARG_INFO()
 
-// Debug日志函数（移到宏定义之后）
+// Debug日志函数（临时写死开启，方便调试）
 void trace_debug_log(const char *format, ...)
 {
-    // 使用简单的条件判断，确保debug功能可用
-    // 即使在MINIT之前也能工作
-    int debug_enabled = 0;
+    // 临时写死：强制开启debug，方便调试
     const char *log_file = "/tmp/php_trace_debug.log";
-    
-    // 尝试从全局变量读取
-    if (trace_globals.debug_enabled) {
-        debug_enabled = 1;
-        if (trace_globals.debug_log_path) {
-            log_file = ZSTR_VAL(trace_globals.debug_log_path);
-        }
-    }
-    
-    // 如果全局变量未初始化，检查环境变量
-    if (!debug_enabled) {
-        char *env_debug = getenv("PHP_TRACE_DEBUG");
-        if (env_debug && strcmp(env_debug, "1") == 0) {
-            debug_enabled = 1;
-        }
-    }
-    
-    if (!debug_enabled) {
-        return;
-    }
     
     FILE *fp = fopen(log_file, "a");
     if (fp) {
