@@ -523,7 +523,8 @@ void trace_execute_ex(zend_execute_data *execute_data)
     
     // 清理回调参数
     trace_debug_log("trace_execute_ex: 清理回调参数");
-    for (int i = 0; i < 6; i++) {
+    int i;
+    for (i = 0; i < 6; i++) {
         zval_dtor(&args[i]);
     }
     if (!Z_ISUNDEF(callback_result)) {
@@ -555,8 +556,9 @@ void trace_execute_ex(zend_execute_data *execute_data)
             ZVAL_UNDEF(&exit_result);
             trace_call_user_callback(&g_function_exit_callback, 3, exit_args, &exit_result);
             
-            for (int i = 0; i < 3; i++) {
-                zval_dtor(&exit_args[i]);
+            int j;
+            for (j = 0; j < 3; j++) {
+                zval_dtor(&exit_args[j]);
             }
             if (!Z_ISUNDEF(exit_result)) {
                 zval_dtor(&exit_result);
