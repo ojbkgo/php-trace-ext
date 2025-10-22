@@ -91,22 +91,40 @@ ZEND_END_ARG_INFO()
 // Debug日志函数（移到宏定义之后）
 void trace_debug_log(const char *format, ...)
 {
-    // 从INI配置读取debug开关
-    if (!TRACE_G(debug_enabled)) {
-        return;
+    // 使用简单的条件判断，确保debug功能可用
+    // 即使在MINIT之前也能工作
+    int debug_enabled = 0;
+    const char *log_file = "/tmp/php_trace_debug.log";
+    
+    // 尝试从全局变量读取
+    if (trace_globals.debug_enabled) {
+        debug_enabled = 1;
+        if (trace_globals.debug_log_path) {
+            log_file = ZSTR_VAL(trace_globals.debug_log_path);
+        }
     }
     
-    const char *log_file = TRACE_G(debug_log_path) ? ZSTR_VAL(TRACE_G(debug_log_path)) : "/tmp/php_trace_debug.log";
+    // 如果全局变量未初始化，检查环境变量
+    if (!debug_enabled) {
+        char *env_debug = getenv("PHP_TRACE_DEBUG");
+        if (env_debug && strcmp(env_debug, "1") == 0) {
+            debug_enabled = 1;
+        }
+    }
+    
+    if (!debug_enabled) {
+        return;
+    }
     
     FILE *fp = fopen(log_file, "a");
     if (fp) {
         va_list args;
         va_start(args, format);
         
-        // 添加时间戳
+        // 添加时间戳和进程信息
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        fprintf(fp, "[%ld.%06d] ", (long)tv.tv_sec, (int)tv.tv_usec);
+        fprintf(fp, "[%ld.%06d][PID:%d] ", (long)tv.tv_sec, (int)tv.tv_usec, getpid());
         
         vfprintf(fp, format, args);
         fprintf(fp, "\n");
