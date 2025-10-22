@@ -88,43 +88,10 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_trace_add_tag, 0, 0, 2)
     ZEND_ARG_INFO(0, value)
 ZEND_END_ARG_INFO()
 
-// Debug日志函数（通过INI配置控制）
+// Debug日志函数（默认开启，只记录关键信息）
 void trace_debug_log(const char *format, ...)
 {
-    int debug_enabled = 0;
     const char *log_file = "/tmp/php_trace_debug.log";
-    
-    // 从全局变量读取配置
-#ifdef ZTS
-    if (trace_globals_id) {
-        zend_trace_globals *tg = TSRMG(trace_globals_id, zend_trace_globals *, );
-        if (tg && tg->debug_enabled) {
-            debug_enabled = 1;
-            if (tg->debug_log_path) {
-                log_file = ZSTR_VAL(tg->debug_log_path);
-            }
-        }
-    }
-#else
-    if (trace_globals.debug_enabled) {
-        debug_enabled = 1;
-        if (trace_globals.debug_log_path) {
-            log_file = ZSTR_VAL(trace_globals.debug_log_path);
-        }
-    }
-#endif
-    
-    // 环境变量备用
-    if (!debug_enabled) {
-        char *env_debug = getenv("PHP_TRACE_DEBUG");
-        if (env_debug && strcmp(env_debug, "1") == 0) {
-            debug_enabled = 1;
-        }
-    }
-    
-    if (!debug_enabled) {
-        return;
-    }
     
     FILE *fp = fopen(log_file, "a");
     if (fp) {
@@ -209,26 +176,20 @@ void trace_finish_span(trace_span_t *span)
 
 void trace_call_user_callback(zval *callback, int argc, zval *argv, zval *retval)
 {
-    trace_debug_log("trace_call_user_callback: 开始, 参数数量=%d", argc);
-    
     if (Z_ISUNDEF_P(callback)) {
-        trace_debug_log("trace_call_user_callback: 回调未定义");
+        trace_debug_log("[ERROR] 回调未定义");
         return;
     }
     
     if (!zend_is_callable(callback, 0, NULL)) {
-        trace_debug_log("trace_call_user_callback: 回调不可调用");
+        trace_debug_log("[ERROR] 回调不可调用");
         return;
     }
     
-    trace_debug_log("trace_call_user_callback: 调用用户函数");
-    
     int result = call_user_function(CG(function_table), NULL, callback, retval, argc, argv);
     
-    if (result == SUCCESS) {
-        trace_debug_log("trace_call_user_callback: 调用成功, 返回值类型=%d", Z_TYPE_P(retval));
-    } else {
-        trace_debug_log("trace_call_user_callback: 调用失败");
+    if (result != SUCCESS) {
+        trace_debug_log("[ERROR] 回调调用失败");
     }
 }
 
@@ -426,105 +387,74 @@ void trace_execute_ex(zend_execute_data *execute_data)
         func_name_debug = ZSTR_VAL(execute_data->func->common.function_name);
     }
     
-    trace_debug_log("=== trace_execute_ex 开始: 函数=%s ===", func_name_debug ? func_name_debug : "NULL");
-    
     // 快速路径：如果没有回调或不需要跟踪，直接执行
-    if (!TRACE_G(enabled)) {
-        trace_debug_log("trace_execute_ex: TRACE_G(enabled) 为 FALSE");
+    if (!TRACE_G(enabled) || Z_ISUNDEF(g_function_enter_callback) || !trace_should_trace_function(execute_data)) {
         original_zend_execute_ex(execute_data);
         return;
     }
-    
-    if (Z_ISUNDEF(g_function_enter_callback)) {
-        trace_debug_log("trace_execute_ex: g_function_enter_callback 未定义");
-        original_zend_execute_ex(execute_data);
-        return;
-    }
-    
-    if (!trace_should_trace_function(execute_data)) {
-        trace_debug_log("trace_execute_ex: trace_should_trace_function 返回 FALSE");
-        original_zend_execute_ex(execute_data);
-        return;
-    }
-    
-    trace_debug_log("trace_execute_ex: 将跟踪函数 %s", func_name_debug);
     
     // 安全检查
     if (!execute_data || !execute_data->func) {
-        trace_debug_log("trace_execute_ex: execute_data 或 func 为 NULL");
+        trace_debug_log("[ERROR] execute_data或func为NULL");
         original_zend_execute_ex(execute_data);
         return;
     }
     
+    trace_debug_log("[TRACE] 函数钩子: %s", func_name_debug ? func_name_debug : "unknown");
+    
     // 准备回调参数
-    trace_debug_log("trace_execute_ex: 准备回调参数");
     zval args[6];
     
     // 函数名
     if (execute_data->func->common.function_name) {
         ZVAL_STR_COPY(&args[0], execute_data->func->common.function_name);
-        trace_debug_log("trace_execute_ex: 函数名=%s", ZSTR_VAL(execute_data->func->common.function_name));
     } else {
         ZVAL_STRING(&args[0], "anonymous");
-        trace_debug_log("trace_execute_ex: 函数名=匿名函数");
     }
     
     // 类名
     if (execute_data->func->common.scope) {
         ZVAL_STR_COPY(&args[1], execute_data->func->common.scope->name);
-        trace_debug_log("trace_execute_ex: 类名=%s", ZSTR_VAL(execute_data->func->common.scope->name));
     } else {
         ZVAL_NULL(&args[1]);
-        trace_debug_log("trace_execute_ex: 类名=NULL");
     }
     
-    // 文件名 - 只对用户函数有效
+    // 文件名
     if (execute_data->func->type == ZEND_USER_FUNCTION && execute_data->func->op_array.filename) {
         ZVAL_STR_COPY(&args[2], execute_data->func->op_array.filename);
-        trace_debug_log("trace_execute_ex: 文件名=%s", ZSTR_VAL(execute_data->func->op_array.filename));
     } else {
         ZVAL_NULL(&args[2]);
-        trace_debug_log("trace_execute_ex: 文件名=NULL");
     }
     
     // 行号
-    int lineno = execute_data->opline ? execute_data->opline->lineno : 0;
-    ZVAL_LONG(&args[3], lineno);
-    trace_debug_log("trace_execute_ex: 行号=%d", lineno);
+    ZVAL_LONG(&args[3], execute_data->opline ? execute_data->opline->lineno : 0);
     
     // 父Span ID
     if (TRACE_G(current_span) && TRACE_G(current_span)->span_id) {
         ZVAL_STR_COPY(&args[4], TRACE_G(current_span)->span_id);
-        trace_debug_log("trace_execute_ex: 父span_id=%s", ZSTR_VAL(TRACE_G(current_span)->span_id));
     } else {
         ZVAL_NULL(&args[4]);
-        trace_debug_log("trace_execute_ex: 父span_id=NULL");
     }
     
     // 参数数量
-    int arg_count = ZEND_CALL_NUM_ARGS(execute_data);
-    ZVAL_LONG(&args[5], arg_count);
-    trace_debug_log("trace_execute_ex: 参数数量=%d", arg_count);
+    ZVAL_LONG(&args[5], ZEND_CALL_NUM_ARGS(execute_data));
     
     // 调用用户回调
-    trace_debug_log("trace_execute_ex: 调用用户回调");
     trace_call_user_callback(&g_function_enter_callback, 6, args, &callback_result);
-    trace_debug_log("trace_execute_ex: 用户回调返回, 类型=%d", Z_TYPE(callback_result));
     
     // 根据回调返回值创建span
     if (Z_TYPE(callback_result) == IS_ARRAY) {
-        trace_debug_log("trace_execute_ex: 回调返回数组");
         zval *operation_name = zend_hash_str_find(Z_ARR(callback_result), "operation_name", sizeof("operation_name") - 1);
         if (operation_name && Z_TYPE_P(operation_name) == IS_STRING && Z_STRLEN_P(operation_name) > 0) {
-            trace_debug_log("trace_execute_ex: 创建span，操作名=%s", Z_STRVAL_P(operation_name));
             span = trace_create_span(Z_STRVAL_P(operation_name), TRACE_G(current_span));
             if (span) {
                 TRACE_G(current_span) = span;
-                trace_debug_log("trace_execute_ex: span创建成功, span_id=%s", ZSTR_VAL(span->span_id));
+                trace_debug_log("[SPAN] 创建: %s (id=%s)", Z_STRVAL_P(operation_name), ZSTR_VAL(span->span_id));
                 
                 // 处理callback返回的tags
                 zval *tags = zend_hash_str_find(Z_ARR(callback_result), "tags", sizeof("tags") - 1);
                 if (tags && Z_TYPE_P(tags) == IS_ARRAY) {
+                    int tag_count = 0;
                     zend_string *tag_key;
                     zval *tag_val;
                     ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARR_P(tags), tag_key, tag_val) {
@@ -532,24 +462,20 @@ void trace_execute_ex(zend_execute_data *execute_data)
                             zval tag_copy;
                             ZVAL_COPY(&tag_copy, tag_val);
                             zend_hash_add(span->tags, tag_key, &tag_copy);
-                            trace_debug_log("trace_execute_ex: 从回调添加tag %s=%s", ZSTR_VAL(tag_key), Z_STRVAL_P(tag_val));
+                            tag_count++;
                         }
                     } ZEND_HASH_FOREACH_END();
+                    if (tag_count > 0) {
+                        trace_debug_log("[SPAN] 从回调添加 %d 个tags", tag_count);
+                    }
                 }
             } else {
-                trace_debug_log("trace_execute_ex: span创建失败");
+                trace_debug_log("[ERROR] Span创建失败");
             }
-        } else {
-            trace_debug_log("trace_execute_ex: 未找到操作名或操作名无效");
         }
-    } else if (Z_TYPE(callback_result) == IS_FALSE) {
-        trace_debug_log("trace_execute_ex: 回调返回FALSE");
-    } else {
-        trace_debug_log("trace_execute_ex: 回调返回类型=%d", Z_TYPE(callback_result));
     }
     
     // 清理回调参数
-    trace_debug_log("trace_execute_ex: 清理回调参数");
     int i;
     for (i = 0; i < 6; i++) {
         zval_dtor(&args[i]);
@@ -557,12 +483,9 @@ void trace_execute_ex(zend_execute_data *execute_data)
     if (!Z_ISUNDEF(callback_result)) {
         zval_dtor(&callback_result);
     }
-    trace_debug_log("trace_execute_ex: 清理完成");
     
     // 调用原始函数
-    trace_debug_log("trace_execute_ex: 调用原始函数");
     original_zend_execute_ex(execute_data);
-    trace_debug_log("trace_execute_ex: 原始函数返回");
     
     // 函数执行完成后处理
     if (span) {
@@ -610,26 +533,24 @@ PHP_FUNCTION(trace_set_callback)
     zval *callback;
     
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "sz", &type, &type_len, &callback) == FAILURE) {
-        trace_debug_log("trace_set_callback: 参数解析失败");
+        trace_debug_log("[ERROR] trace_set_callback: 参数解析失败");
         RETURN_FALSE;
     }
     
-    trace_debug_log("trace_set_callback: 类型=%s", type);
-    
     if (strcmp(type, "function_enter") == 0) {
         ZVAL_COPY(&g_function_enter_callback, callback);
-        trace_debug_log("trace_set_callback: function_enter 回调已设置, 可调用=%d", zend_is_callable(callback, 0, NULL));
+        trace_debug_log("[CALLBACK] 设置 function_enter");
     } else if (strcmp(type, "function_exit") == 0) {
         ZVAL_COPY(&g_function_exit_callback, callback);
-        trace_debug_log("trace_set_callback: function_exit 回调已设置");
+        trace_debug_log("[CALLBACK] 设置 function_exit");
     } else if (strcmp(type, "curl") == 0) {
         ZVAL_COPY(&g_curl_callback, callback);
-        trace_debug_log("trace_set_callback: curl 回调已设置");
+        trace_debug_log("[CALLBACK] 设置 curl");
     } else if (strcmp(type, "database") == 0) {
         ZVAL_COPY(&g_db_callback, callback);
-        trace_debug_log("trace_set_callback: database 回调已设置");
+        trace_debug_log("[CALLBACK] 设置 database");
     } else {
-        trace_debug_log("trace_set_callback: 未知类型=%s", type);
+        trace_debug_log("[ERROR] trace_set_callback: 未知类型=%s", type);
         RETURN_FALSE;
     }
     
@@ -754,11 +675,9 @@ PHP_FUNCTION(trace_set_callback_whitelist)
     zval *rules;
     
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &rules) == FAILURE) {
-        trace_debug_log("trace_set_callback_whitelist: 参数解析失败");
+        trace_debug_log("[ERROR] trace_set_callback_whitelist: 参数解析失败");
         RETURN_FALSE;
     }
-    
-    trace_debug_log("trace_set_callback_whitelist: 规则类型=%d", Z_TYPE_P(rules));
     
     // 存储白名单规则
     if (!Z_ISUNDEF(g_trace_whitelist)) {
@@ -768,7 +687,7 @@ PHP_FUNCTION(trace_set_callback_whitelist)
     ZVAL_COPY(&g_trace_whitelist, rules);
     
     if (Z_TYPE_P(rules) == IS_ARRAY) {
-        trace_debug_log("trace_set_callback_whitelist: 白名单已设置, 规则数量=%d", zend_hash_num_elements(Z_ARR_P(rules)));
+        trace_debug_log("[WHITELIST] 设置 %d 条规则", zend_hash_num_elements(Z_ARR_P(rules)));
     }
     
     RETURN_TRUE;
@@ -784,8 +703,6 @@ PHP_FUNCTION(trace_reset)
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "|s", &trace_id, &trace_id_len) == FAILURE) {
         RETURN_FALSE;
     }
-    
-    trace_debug_log("trace_reset: 开始重置trace");
     
     if (TRACE_G(enabled)) {
         // 完成当前根span
@@ -832,17 +749,15 @@ PHP_FUNCTION(trace_reset)
                 zend_string_release(TRACE_G(trace_id));
             }
             TRACE_G(trace_id) = zend_string_init(trace_id, trace_id_len, 0);
-            trace_debug_log("trace_reset: 使用指定TraceID=%s", trace_id);
+            trace_debug_log("[RESET] 使用TraceID=%s", trace_id);
         } else {
             trace_generate_ids();
-            trace_debug_log("trace_reset: 生成新TraceID=%s", ZSTR_VAL(TRACE_G(trace_id)));
+            trace_debug_log("[RESET] 新TraceID=%s", ZSTR_VAL(TRACE_G(trace_id)));
         }
         
         // 创建新的根span
         TRACE_G(root_span) = trace_create_span("http.request", NULL);
         TRACE_G(current_span) = TRACE_G(root_span);
-        
-        trace_debug_log("trace_reset: 重置完成");
     }
     
     RETURN_TRUE;
@@ -862,8 +777,6 @@ PHP_FUNCTION(trace_add_tag)
         zval tag_value;
         ZVAL_STRING(&tag_value, value);
         zend_hash_str_update(TRACE_G(current_span)->tags, key, key_len, &tag_value);
-        
-        trace_debug_log("trace_add_tag: 添加tag %s=%s 到span %s", key, value, ZSTR_VAL(TRACE_G(current_span)->span_id));
         RETURN_TRUE;
     }
     
@@ -907,7 +820,7 @@ static void php_trace_init_globals(zend_trace_globals *trace_globals)
 // 模块初始化
 PHP_MINIT_FUNCTION(trace)
 {
-    trace_debug_log("PHP_MINIT_FUNCTION: start");
+    trace_debug_log("[INIT] 模块初始化开始");
     
     ZEND_INIT_MODULE_GLOBALS(trace, php_trace_init_globals, NULL);
     REGISTER_INI_ENTRIES();
@@ -918,13 +831,11 @@ PHP_MINIT_FUNCTION(trace)
     ZVAL_UNDEF(&g_db_callback);
     ZVAL_UNDEF(&g_trace_whitelist);
     
-    trace_debug_log("PHP_MINIT_FUNCTION: globals initialized");
-    
     // 启用函数调用钩子
     original_zend_execute_ex = zend_execute_ex;
     zend_execute_ex = trace_execute_ex;
     
-    trace_debug_log("PHP_MINIT_FUNCTION: hook installed, original=%p, new=%p", original_zend_execute_ex, trace_execute_ex);
+    trace_debug_log("[INIT] 钩子已安装");
     
     return SUCCESS;
 }
@@ -943,8 +854,6 @@ PHP_MSHUTDOWN_FUNCTION(trace)
 // 请求初始化
 PHP_RINIT_FUNCTION(trace)
 {
-    trace_debug_log("PHP_RINIT_FUNCTION: start, enabled=%d", TRACE_G(enabled));
-    
     if (TRACE_G(enabled)) {
         TRACE_G(current_span) = NULL;
         TRACE_G(root_span) = NULL;
@@ -954,7 +863,6 @@ PHP_RINIT_FUNCTION(trace)
         zend_hash_init(TRACE_G(all_spans), 8, NULL, ZVAL_PTR_DTOR, 0);
         
         trace_generate_ids();
-        trace_debug_log("PHP_RINIT_FUNCTION: TraceID generated=%s", ZSTR_VAL(TRACE_G(trace_id)));
         
         if (!TRACE_G(service_name)) {
             TRACE_G(service_name) = zend_string_init("php-app", 7, 0);
@@ -962,7 +870,10 @@ PHP_RINIT_FUNCTION(trace)
         
         TRACE_G(root_span) = trace_create_span("http.request", NULL);
         TRACE_G(current_span) = TRACE_G(root_span);
-        trace_debug_log("PHP_RINIT_FUNCTION: root span created=%s", ZSTR_VAL(TRACE_G(root_span)->span_id));
+        
+        trace_debug_log("[REQUEST] TraceID=%s, RootSpan=%s", 
+            ZSTR_VAL(TRACE_G(trace_id)), 
+            ZSTR_VAL(TRACE_G(root_span)->span_id));
     }
     
     return SUCCESS;
