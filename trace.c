@@ -989,8 +989,74 @@ PHP_RSHUTDOWN_FUNCTION(trace)
 PHP_MINFO_FUNCTION(trace)
 {
     php_info_print_table_start();
-    php_info_print_table_header(2, "trace support", "enabled");
-    php_info_print_table_row(2, "version", PHP_TRACE_VERSION);
+    php_info_print_table_header(2, "Trace Extension", "enabled");
+    php_info_print_table_row(2, "Version", PHP_TRACE_VERSION);
+    php_info_print_table_row(2, "Author", "ziyue.wen");
+    php_info_print_table_end();
+    
+    php_info_print_table_start();
+    php_info_print_table_header(2, "Current Request", "Value");
+    
+    if (TRACE_G(trace_id)) {
+        php_info_print_table_row(2, "Trace ID", ZSTR_VAL(TRACE_G(trace_id)));
+    } else {
+        php_info_print_table_row(2, "Trace ID", "Not initialized");
+    }
+    
+    if (TRACE_G(service_name)) {
+        php_info_print_table_row(2, "Service Name", ZSTR_VAL(TRACE_G(service_name)));
+    } else {
+        php_info_print_table_row(2, "Service Name", "Not set");
+    }
+    
+    char span_count_str[32];
+    if (TRACE_G(all_spans)) {
+        snprintf(span_count_str, sizeof(span_count_str), "%d", zend_hash_num_elements(TRACE_G(all_spans)));
+        php_info_print_table_row(2, "Total Spans", span_count_str);
+    } else {
+        php_info_print_table_row(2, "Total Spans", "0");
+    }
+    
+    if (TRACE_G(current_span)) {
+        php_info_print_table_row(2, "Current Span", ZSTR_VAL(TRACE_G(current_span)->operation_name));
+        php_info_print_table_row(2, "Current Span ID", ZSTR_VAL(TRACE_G(current_span)->span_id));
+    } else {
+        php_info_print_table_row(2, "Current Span", "None");
+    }
+    
+    php_info_print_table_end();
+    
+    php_info_print_table_start();
+    php_info_print_table_header(2, "Callbacks", "Status");
+    php_info_print_table_row(2, "function_enter", !Z_ISUNDEF(g_function_enter_callback) ? "Set" : "Not set");
+    php_info_print_table_row(2, "function_exit", !Z_ISUNDEF(g_function_exit_callback) ? "Set" : "Not set");
+    php_info_print_table_row(2, "curl", !Z_ISUNDEF(g_curl_callback) ? "Set" : "Not set");
+    php_info_print_table_row(2, "database", !Z_ISUNDEF(g_db_callback) ? "Set" : "Not set");
+    php_info_print_table_end();
+    
+    php_info_print_table_start();
+    php_info_print_table_header(2, "Whitelist", "Status");
+    
+    if (!Z_ISUNDEF(g_trace_whitelist) && Z_TYPE(g_trace_whitelist) == IS_ARRAY) {
+        char rule_count_str[32];
+        snprintf(rule_count_str, sizeof(rule_count_str), "%d rules", zend_hash_num_elements(Z_ARR(g_trace_whitelist)));
+        php_info_print_table_row(2, "Rules", rule_count_str);
+    } else {
+        php_info_print_table_row(2, "Rules", "Not set (trace all)");
+    }
+    
+    php_info_print_table_end();
+    
+    php_info_print_table_start();
+    php_info_print_table_header(2, "Features", "Support");
+    php_info_print_table_row(2, "Auto Function Tracing", "Yes");
+    php_info_print_table_row(2, "Span Stack Management", "Yes");
+    php_info_print_table_row(2, "Tags Support", "Yes");
+    php_info_print_table_row(2, "Logs Support", "Yes");
+    php_info_print_table_row(2, "Whitelist Rules", "15 types");
+    php_info_print_table_row(2, "CLI Mode (trace_reset)", "Yes");
+    php_info_print_table_row(2, "OpenTelemetry Format", "Yes");
+    php_info_print_table_row(2, "Debug Logging", "Yes");
     php_info_print_table_end();
     
     DISPLAY_INI_ENTRIES();
