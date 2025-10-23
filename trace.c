@@ -247,13 +247,67 @@ int trace_wildcard_match(const char *str, const char *pattern)
     return *p == '\0';
 }
 
+// 检查字符串是否匹配模式数组
+// patterns 是一个数组，每项都需要匹配（AND关系）
+// 如果pattern以 "! " 开头，表示反向匹配（不应该匹配）
+// 返回：1=匹配，0=不匹配
+int trace_match_patterns(const char *str, zval *patterns)
+{
+    if (!patterns) {
+        return 1;  // 没有pattern，匹配所有
+    }
+    
+    // 如果是字符串，转换为单元素数组处理
+    if (Z_TYPE_P(patterns) == IS_STRING) {
+        const char *pattern = Z_STRVAL_P(patterns);
+        int is_negative = (strlen(pattern) > 2 && pattern[0] == '!' && pattern[1] == ' ');
+        const char *actual_pattern = is_negative ? pattern + 2 : pattern;
+        int match_result = trace_wildcard_match(str, actual_pattern);
+        return is_negative ? !match_result : match_result;
+    }
+    
+    // 如果是数组，所有pattern都需要匹配（AND关系）
+    if (Z_TYPE_P(patterns) == IS_ARRAY) {
+        zval *pattern_item;
+        ZEND_HASH_FOREACH_VAL(Z_ARR_P(patterns), pattern_item) {
+            if (Z_TYPE_P(pattern_item) != IS_STRING) {
+                continue;
+            }
+            
+            const char *pattern = Z_STRVAL_P(pattern_item);
+            int is_negative = (strlen(pattern) > 2 && pattern[0] == '!' && pattern[1] == ' ');
+            const char *actual_pattern = is_negative ? pattern + 2 : pattern;
+            int match_result = trace_wildcard_match(str, actual_pattern);
+            
+            // 正向匹配：需要匹配
+            // 反向匹配：不应该匹配
+            if (is_negative) {
+                if (match_result) {
+                    return 0;  // 反向匹配成功（不应该匹配但匹配了），整体失败
+                }
+            } else {
+                if (!match_result) {
+                    return 0;  // 正向匹配失败，整体失败
+                }
+            }
+        } ZEND_HASH_FOREACH_END();
+        return 1;  // 所有pattern都通过
+    }
+    
+    return 1;  // 其他类型，默认匹配
+}
+
 // 判断是否应该跟踪函数
 // 白名单格式：[
-//   ['file_pattern' => '/app/*', 'class_pattern' => 'App\\*', 'function_pattern' => 'handle*'],
-//   ['file_pattern' => '/src/*']  // 其他字段省略表示 *（匹配所有）
+//   [
+//     'file_pattern' => ['/app/*', '! */vendor/*'],  // 在/app/下 且 不在vendor下
+//     'class_pattern' => ['App\\*'],
+//     'function_pattern' => ['handle*', '! *Internal']
+//   ]
 // ]
 // 多个规则之间是 OR 关系（符合任意一个即可）
 // 每个规则内部的条件是 AND 关系（都要符合）
+// 每个字段的多个pattern也是 AND 关系（都要符合）
 int trace_should_trace_function(zend_execute_data *execute_data)
 {
     if (!execute_data || !execute_data->func) {
@@ -300,19 +354,18 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         int matched = 1;  // 假设匹配，逐项检查（AND关系）
         
         // 检查 file_pattern
-        zval *file_pattern = zend_hash_str_find(Z_ARR_P(rule), "file_pattern", sizeof("file_pattern") - 1);
-        if (file_pattern && Z_TYPE_P(file_pattern) == IS_STRING) {
-            if (!trace_wildcard_match(file_name, Z_STRVAL_P(file_pattern))) {
+        zval *file_patterns = zend_hash_str_find(Z_ARR_P(rule), "file_pattern", sizeof("file_pattern") - 1);
+        if (file_patterns) {
+            if (!trace_match_patterns(file_name, file_patterns)) {
                 matched = 0;
             }
         }
-        // 如果没有 file_pattern，相当于 *，匹配所有
         
         // 检查 class_pattern
         if (matched) {
-            zval *class_pattern = zend_hash_str_find(Z_ARR_P(rule), "class_pattern", sizeof("class_pattern") - 1);
-            if (class_pattern && Z_TYPE_P(class_pattern) == IS_STRING) {
-                if (!trace_wildcard_match(class_name, Z_STRVAL_P(class_pattern))) {
+            zval *class_patterns = zend_hash_str_find(Z_ARR_P(rule), "class_pattern", sizeof("class_pattern") - 1);
+            if (class_patterns) {
+                if (!trace_match_patterns(class_name, class_patterns)) {
                     matched = 0;
                 }
             }
@@ -320,9 +373,9 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         
         // 检查 function_pattern
         if (matched) {
-            zval *func_pattern = zend_hash_str_find(Z_ARR_P(rule), "function_pattern", sizeof("function_pattern") - 1);
-            if (func_pattern && Z_TYPE_P(func_pattern) == IS_STRING) {
-                if (!trace_wildcard_match(func_name, Z_STRVAL_P(func_pattern))) {
+            zval *func_patterns = zend_hash_str_find(Z_ARR_P(rule), "function_pattern", sizeof("function_pattern") - 1);
+            if (func_patterns) {
+                if (!trace_match_patterns(func_name, func_patterns)) {
                     matched = 0;
                 }
             }
@@ -368,7 +421,22 @@ void trace_execute_ex(zend_execute_data *execute_data)
         return;
     }
     
-    // 准备回调参数
+    // 获取调用方上下文（caller's context）
+    const char *caller_file = NULL;
+    int caller_line = 0;
+    if (execute_data->prev_execute_data) {
+        zend_execute_data *caller = execute_data->prev_execute_data;
+        if (caller->func && caller->func->type == ZEND_USER_FUNCTION) {
+            if (caller->func->op_array.filename) {
+                caller_file = ZSTR_VAL(caller->func->op_array.filename);
+            }
+            if (caller->opline) {
+                caller_line = caller->opline->lineno;
+            }
+        }
+    }
+    
+    // 准备回调参数：function, class, caller_file, caller_line, parent_span_id, args
     zval args[6];
     
     // 函数名
@@ -385,15 +453,15 @@ void trace_execute_ex(zend_execute_data *execute_data)
         ZVAL_NULL(&args[1]);
     }
     
-    // 文件名
-    if (execute_data->func->type == ZEND_USER_FUNCTION && execute_data->func->op_array.filename) {
-        ZVAL_STR_COPY(&args[2], execute_data->func->op_array.filename);
+    // 调用方文件名
+    if (caller_file) {
+        ZVAL_STRING(&args[2], caller_file);
     } else {
         ZVAL_NULL(&args[2]);
     }
     
-    // 行号
-    ZVAL_LONG(&args[3], execute_data->opline ? execute_data->opline->lineno : 0);
+    // 调用方行号
+    ZVAL_LONG(&args[3], caller_line);
     
     // 父Span ID
     if (TRACE_G(current_span) && TRACE_G(current_span)->span_id) {
@@ -402,8 +470,18 @@ void trace_execute_ex(zend_execute_data *execute_data)
         ZVAL_NULL(&args[4]);
     }
     
-    // 参数数量
-    ZVAL_LONG(&args[5], ZEND_CALL_NUM_ARGS(execute_data));
+    // 函数参数数组
+    array_init(&args[5]);
+    uint32_t arg_count = ZEND_CALL_NUM_ARGS(execute_data);
+    if (arg_count > 0) {
+        zval *p = ZEND_CALL_ARG(execute_data, 1);
+        for (uint32_t i = 0; i < arg_count; i++) {
+            zval arg_copy;
+            ZVAL_COPY(&arg_copy, p);
+            add_next_index_zval(&args[5], &arg_copy);
+            p++;
+        }
+    }
     
     // 调用用户回调
     trace_call_user_callback(&TRACE_G(function_enter_callback), 6, args, &callback_result);
@@ -456,14 +534,42 @@ void trace_execute_ex(zend_execute_data *execute_data)
         // 调用exit回调
         if (!Z_ISUNDEF(TRACE_G(function_exit_callback))) {
             zval exit_args[3];
+            
+            // span_id
             ZVAL_STR_COPY(&exit_args[0], span->span_id);
+            
+            // duration (执行时长)
             ZVAL_DOUBLE(&exit_args[1], span->end_time - span->start_time);
-            ZVAL_NULL(&exit_args[2]); // 返回值暂不传递
+            
+            // 函数返回值
+            if (execute_data->return_value && !Z_ISUNDEF_P(execute_data->return_value)) {
+                ZVAL_COPY(&exit_args[2], execute_data->return_value);
+            } else {
+                ZVAL_NULL(&exit_args[2]);
+            }
             
             zval exit_result;
             ZVAL_UNDEF(&exit_result);
             trace_call_user_callback(&TRACE_G(function_exit_callback), 3, exit_args, &exit_result);
             
+            // 处理exit回调返回的tags，合并到span
+            if (Z_TYPE(exit_result) == IS_ARRAY) {
+                zval *exit_tags = zend_hash_str_find(Z_ARR(exit_result), "tags", sizeof("tags") - 1);
+                if (exit_tags && Z_TYPE_P(exit_tags) == IS_ARRAY && span->tags) {
+                    zend_string *tag_key;
+                    zval *tag_val;
+                    ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARR_P(exit_tags), tag_key, tag_val) {
+                        if (tag_key) {
+                            zval tag_copy;
+                            ZVAL_COPY(&tag_copy, tag_val);
+                            // 更新或添加tag
+                            zend_hash_update(span->tags, tag_key, &tag_copy);
+                        }
+                    } ZEND_HASH_FOREACH_END();
+                }
+            }
+            
+            // 清理
             int j;
             for (j = 0; j < 3; j++) {
                 zval_dtor(&exit_args[j]);
