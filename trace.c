@@ -35,6 +35,12 @@ ZEND_BEGIN_MODULE_GLOBALS(trace)
     zend_array *all_spans;
     zend_long span_counter;
     zend_bool in_trace_callback;  // 重入保护标志：防止在回调中再次触发追踪
+    // 请求级回调（每个请求独立，避免FPM进程复用时相互影响）
+    zval function_enter_callback;
+    zval function_exit_callback;
+    zval curl_callback;
+    zval db_callback;
+    zval trace_whitelist;  // 白名单规则
 ZEND_END_MODULE_GLOBALS(trace)
 
 #ifdef ZTS
@@ -45,17 +51,8 @@ ZEND_END_MODULE_GLOBALS(trace)
 
 ZEND_DECLARE_MODULE_GLOBALS(trace)
 
-// 原始函数指针
+// 原始函数指针（模块级，全局共享）
 void (*original_zend_execute_ex)(zend_execute_data *execute_data) = NULL;
-
-// 用户回调存储
-zval g_function_enter_callback;
-zval g_function_exit_callback;
-zval g_curl_callback;
-zval g_db_callback;
-
-// 白名单配置
-zval g_trace_whitelist;  // 存储白名单规则
 
 // 参数信息
 ZEND_BEGIN_ARG_INFO_EX(arginfo_trace_get_trace_id, 0, 0, 0)
@@ -247,12 +244,12 @@ int trace_should_trace_function(zend_execute_data *execute_data)
     }
     
     // 如果没有设置白名单，跟踪所有函数
-    if (Z_ISUNDEF(g_trace_whitelist)) {
+    if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
         return 0;
     }
     
     // 如果白名单不是数组，跟踪所有函数
-    if (Z_TYPE(g_trace_whitelist) != IS_ARRAY) {
+    if (Z_TYPE(TRACE_G(trace_whitelist)) != IS_ARRAY) {
         return 0;
     }
     
@@ -267,7 +264,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
     
     // 遍历白名单规则
     zval *rule;
-    ZEND_HASH_FOREACH_VAL(Z_ARR(g_trace_whitelist), rule) {
+    ZEND_HASH_FOREACH_VAL(Z_ARR(TRACE_G(trace_whitelist)), rule) {
         if (Z_TYPE_P(rule) != IS_ARRAY) {
             continue;
         }
@@ -399,7 +396,7 @@ void trace_execute_ex(zend_execute_data *execute_data)
     }
     
     // 快速路径：检查是否需要跟踪
-    if (!TRACE_G(enabled) || Z_ISUNDEF(g_function_enter_callback)) {
+    if (!TRACE_G(enabled) || Z_ISUNDEF(TRACE_G(function_enter_callback))) {
         original_zend_execute_ex(execute_data);
         return;
     }
@@ -453,7 +450,7 @@ void trace_execute_ex(zend_execute_data *execute_data)
     ZVAL_LONG(&args[5], ZEND_CALL_NUM_ARGS(execute_data));
     
     // 调用用户回调
-    trace_call_user_callback(&g_function_enter_callback, 6, args, &callback_result);
+    trace_call_user_callback(&TRACE_G(function_enter_callback), 6, args, &callback_result);
     
     // 根据回调返回值创建span
     if (Z_TYPE(callback_result) == IS_ARRAY) {
@@ -501,7 +498,7 @@ void trace_execute_ex(zend_execute_data *execute_data)
         TRACE_G(current_span) = span->parent;
         
         // 调用exit回调
-        if (!Z_ISUNDEF(g_function_exit_callback)) {
+        if (!Z_ISUNDEF(TRACE_G(function_exit_callback))) {
             zval exit_args[3];
             ZVAL_STR_COPY(&exit_args[0], span->span_id);
             ZVAL_DOUBLE(&exit_args[1], span->end_time - span->start_time);
@@ -509,7 +506,7 @@ void trace_execute_ex(zend_execute_data *execute_data)
             
             zval exit_result;
             ZVAL_UNDEF(&exit_result);
-            trace_call_user_callback(&g_function_exit_callback, 3, exit_args, &exit_result);
+            trace_call_user_callback(&TRACE_G(function_exit_callback), 3, exit_args, &exit_result);
             
             int j;
             for (j = 0; j < 3; j++) {
@@ -543,13 +540,25 @@ PHP_FUNCTION(trace_set_callback)
     }
     
     if (strcmp(type, "function_enter") == 0) {
-        ZVAL_COPY(&g_function_enter_callback, callback);
+        if (!Z_ISUNDEF(TRACE_G(function_enter_callback))) {
+            zval_dtor(&TRACE_G(function_enter_callback));
+        }
+        ZVAL_COPY(&TRACE_G(function_enter_callback), callback);
     } else if (strcmp(type, "function_exit") == 0) {
-        ZVAL_COPY(&g_function_exit_callback, callback);
+        if (!Z_ISUNDEF(TRACE_G(function_exit_callback))) {
+            zval_dtor(&TRACE_G(function_exit_callback));
+        }
+        ZVAL_COPY(&TRACE_G(function_exit_callback), callback);
     } else if (strcmp(type, "curl") == 0) {
-        ZVAL_COPY(&g_curl_callback, callback);
+        if (!Z_ISUNDEF(TRACE_G(curl_callback))) {
+            zval_dtor(&TRACE_G(curl_callback));
+        }
+        ZVAL_COPY(&TRACE_G(curl_callback), callback);
     } else if (strcmp(type, "database") == 0) {
-        ZVAL_COPY(&g_db_callback, callback);
+        if (!Z_ISUNDEF(TRACE_G(db_callback))) {
+            zval_dtor(&TRACE_G(db_callback));
+        }
+        ZVAL_COPY(&TRACE_G(db_callback), callback);
     } else {
         RETURN_FALSE;
     }
@@ -680,11 +689,11 @@ PHP_FUNCTION(trace_set_callback_whitelist)
     }
     
     // 存储白名单规则
-    if (!Z_ISUNDEF(g_trace_whitelist)) {
-        zval_dtor(&g_trace_whitelist);
+    if (!Z_ISUNDEF(TRACE_G(trace_whitelist))) {
+        zval_dtor(&TRACE_G(trace_whitelist));
     }
     
-    ZVAL_COPY(&g_trace_whitelist, rules);
+    ZVAL_COPY(&TRACE_G(trace_whitelist), rules);
     
     RETURN_TRUE;
 }
@@ -809,7 +818,13 @@ static void php_trace_init_globals(zend_trace_globals *trace_globals)
     trace_globals->root_span = NULL;
     trace_globals->all_spans = NULL;
     trace_globals->span_counter = 0;
-    trace_globals->in_trace_callback = 0;  // 初始化重入保护标志
+    trace_globals->in_trace_callback = 0;
+    // 初始化请求级回调和白名单
+    ZVAL_UNDEF(&trace_globals->function_enter_callback);
+    ZVAL_UNDEF(&trace_globals->function_exit_callback);
+    ZVAL_UNDEF(&trace_globals->curl_callback);
+    ZVAL_UNDEF(&trace_globals->db_callback);
+    ZVAL_UNDEF(&trace_globals->trace_whitelist);
 }
 
 // 模块初始化
@@ -817,12 +832,6 @@ PHP_MINIT_FUNCTION(trace)
 {
     ZEND_INIT_MODULE_GLOBALS(trace, php_trace_init_globals, NULL);
     REGISTER_INI_ENTRIES();
-    
-    ZVAL_UNDEF(&g_function_enter_callback);
-    ZVAL_UNDEF(&g_function_exit_callback);
-    ZVAL_UNDEF(&g_curl_callback);
-    ZVAL_UNDEF(&g_db_callback);
-    ZVAL_UNDEF(&g_trace_whitelist);
     
     // 只在非CLI模式下启用函数调用钩子
     // 检查所有命令行相关的SAPI：cli, phpdbg, embed
@@ -852,6 +861,14 @@ PHP_MSHUTDOWN_FUNCTION(trace)
 // 请求初始化
 PHP_RINIT_FUNCTION(trace)
 {
+    // 初始化回调和白名单（每个请求独立）
+    ZVAL_UNDEF(&TRACE_G(function_enter_callback));
+    ZVAL_UNDEF(&TRACE_G(function_exit_callback));
+    ZVAL_UNDEF(&TRACE_G(curl_callback));
+    ZVAL_UNDEF(&TRACE_G(db_callback));
+    ZVAL_UNDEF(&TRACE_G(trace_whitelist));
+    TRACE_G(in_trace_callback) = 0;
+    
     if (TRACE_G(enabled)) {
         TRACE_G(current_span) = NULL;
         TRACE_G(root_span) = NULL;
@@ -914,6 +931,29 @@ PHP_RSHUTDOWN_FUNCTION(trace)
         TRACE_G(current_span) = NULL;
         TRACE_G(root_span) = NULL;
     }
+    
+    // 清理回调和白名单（避免FPM进程复用时相互影响）
+    if (!Z_ISUNDEF(TRACE_G(function_enter_callback))) {
+        zval_dtor(&TRACE_G(function_enter_callback));
+        ZVAL_UNDEF(&TRACE_G(function_enter_callback));
+    }
+    if (!Z_ISUNDEF(TRACE_G(function_exit_callback))) {
+        zval_dtor(&TRACE_G(function_exit_callback));
+        ZVAL_UNDEF(&TRACE_G(function_exit_callback));
+    }
+    if (!Z_ISUNDEF(TRACE_G(curl_callback))) {
+        zval_dtor(&TRACE_G(curl_callback));
+        ZVAL_UNDEF(&TRACE_G(curl_callback));
+    }
+    if (!Z_ISUNDEF(TRACE_G(db_callback))) {
+        zval_dtor(&TRACE_G(db_callback));
+        ZVAL_UNDEF(&TRACE_G(db_callback));
+    }
+    if (!Z_ISUNDEF(TRACE_G(trace_whitelist))) {
+        zval_dtor(&TRACE_G(trace_whitelist));
+        ZVAL_UNDEF(&TRACE_G(trace_whitelist));
+    }
+    
     return SUCCESS;
 }
 
@@ -960,18 +1000,18 @@ PHP_MINFO_FUNCTION(trace)
     
     php_info_print_table_start();
     php_info_print_table_header(2, "Callbacks", "Status");
-    php_info_print_table_row(2, "function_enter", !Z_ISUNDEF(g_function_enter_callback) ? "Set" : "Not set");
-    php_info_print_table_row(2, "function_exit", !Z_ISUNDEF(g_function_exit_callback) ? "Set" : "Not set");
-    php_info_print_table_row(2, "curl", !Z_ISUNDEF(g_curl_callback) ? "Set" : "Not set");
-    php_info_print_table_row(2, "database", !Z_ISUNDEF(g_db_callback) ? "Set" : "Not set");
+    php_info_print_table_row(2, "function_enter", !Z_ISUNDEF(TRACE_G(function_enter_callback)) ? "Set" : "Not set");
+    php_info_print_table_row(2, "function_exit", !Z_ISUNDEF(TRACE_G(function_exit_callback)) ? "Set" : "Not set");
+    php_info_print_table_row(2, "curl", !Z_ISUNDEF(TRACE_G(curl_callback)) ? "Set" : "Not set");
+    php_info_print_table_row(2, "database", !Z_ISUNDEF(TRACE_G(db_callback)) ? "Set" : "Not set");
     php_info_print_table_end();
     
     php_info_print_table_start();
     php_info_print_table_header(2, "Whitelist", "Status");
     
-    if (!Z_ISUNDEF(g_trace_whitelist) && Z_TYPE(g_trace_whitelist) == IS_ARRAY) {
+    if (!Z_ISUNDEF(TRACE_G(trace_whitelist)) && Z_TYPE(TRACE_G(trace_whitelist)) == IS_ARRAY) {
         char rule_count_str[32];
-        snprintf(rule_count_str, sizeof(rule_count_str), "%d rules", zend_hash_num_elements(Z_ARR(g_trace_whitelist)));
+        snprintf(rule_count_str, sizeof(rule_count_str), "%d rules", zend_hash_num_elements(Z_ARR(TRACE_G(trace_whitelist))));
         php_info_print_table_row(2, "Rules", rule_count_str);
     } else {
         php_info_print_table_row(2, "Rules", "Not set (trace all)");
