@@ -190,7 +190,24 @@ void trace_call_user_callback(zval *callback, int argc, zval *argv, zval *retval
     int result = call_user_function(CG(function_table), NULL, callback, retval, argc, argv);
     
     if (result != SUCCESS) {
-        trace_debug_log("[ERROR] 回调调用失败");
+        char *error_msg = NULL;
+        
+        switch (result) {
+            case FAILURE:
+                error_msg = "一般性失败";
+                break;
+            case INVALID_CALLBACK:
+                error_msg = "无效的回调";
+                break;
+            case WRONG_PARAM_COUNT:
+                error_msg = "参数数量错误";
+                break;
+            default:
+                error_msg = "未知错误";
+                break;
+        }
+        
+        trace_debug_log("[ERROR] 回调调用失败: %s (错误码: %d)", error_msg, result);
     }
 }
 
