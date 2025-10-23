@@ -182,32 +182,56 @@ void trace_call_user_callback(zval *callback, int argc, zval *argv, zval *retval
         return;
     }
     
-    if (!zend_is_callable(callback, 0, NULL)) {
-        trace_debug_log("[ERROR] 回调不可调用");
+    // 获取回调名称用于调试
+    zend_string *callback_name = NULL;
+    if (!zend_is_callable(callback, 0, &callback_name)) {
+        trace_debug_log("[ERROR] 回调不可调用: %s", 
+                       callback_name ? ZSTR_VAL(callback_name) : "unknown");
+        if (callback_name) {
+            zend_string_release(callback_name);
+        }
         return;
     }
     
+    trace_debug_log("[CALLBACK] 调用回调: %s (参数数量: %d)", 
+                   callback_name ? ZSTR_VAL(callback_name) : "unknown", argc);
+    
+    // 调用用户函数
     int result = call_user_function(CG(function_table), NULL, callback, retval, argc, argv);
     
     if (result != SUCCESS) {
-        char *error_msg = NULL;
+        trace_debug_log("[ERROR] 回调调用失败: %s (错误码: %d)", 
+                       callback_name ? ZSTR_VAL(callback_name) : "unknown", result);
         
-        switch (result) {
-            case FAILURE:
-                error_msg = "一般性失败";
-                break;
-            case INVALID_CALLBACK:
-                error_msg = "无效的回调";
-                break;
-            case WRONG_PARAM_COUNT:
-                error_msg = "参数数量错误";
-                break;
-            default:
-                error_msg = "未知错误";
-                break;
+        // 检查是否有异常抛出
+        if (EG(exception)) {
+            zend_object *exception = EG(exception);
+            zval exception_zv;
+            ZVAL_OBJ(&exception_zv, exception);
+            
+            // 获取异常消息
+            zval *message = zend_read_property(exception->ce, &exception_zv, "message", sizeof("message")-1, 1, NULL);
+            if (message && Z_TYPE_P(message) == IS_STRING) {
+                trace_debug_log("[ERROR] 异常信息: %s", Z_STRVAL_P(message));
+            }
+            
+            // 获取异常文件和行号
+            zval *file = zend_read_property(exception->ce, &exception_zv, "file", sizeof("file")-1, 1, NULL);
+            zval *line = zend_read_property(exception->ce, &exception_zv, "line", sizeof("line")-1, 1, NULL);
+            if (file && Z_TYPE_P(file) == IS_STRING && line && Z_TYPE_P(line) == IS_LONG) {
+                trace_debug_log("[ERROR] 异常位置: %s:%ld", Z_STRVAL_P(file), Z_LVAL_P(line));
+            }
+            
+            // 清除异常，避免影响后续执行
+            zend_clear_exception();
         }
-        
-        trace_debug_log("[ERROR] 回调调用失败: %s (错误码: %d)", error_msg, result);
+    } else {
+        trace_debug_log("[CALLBACK] 回调执行成功: %s", 
+                       callback_name ? ZSTR_VAL(callback_name) : "unknown");
+    }
+    
+    if (callback_name) {
+        zend_string_release(callback_name);
     }
 }
 
