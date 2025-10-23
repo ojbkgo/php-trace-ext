@@ -335,7 +335,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         return 0;
     }
     
-    // 获取函数信息
+    // 获取函数信息 文件、 行号
     const char *func_name = execute_data->func->common.function_name ? 
                            ZSTR_VAL(execute_data->func->common.function_name) : "";
     const char *class_name = execute_data->func->common.scope ? 
@@ -343,6 +343,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
     const char *file_name = (execute_data->func->type == ZEND_USER_FUNCTION && 
                             execute_data->func->op_array.filename) ?
                            ZSTR_VAL(execute_data->func->op_array.filename) : "";
+    int line_number = execute_data->opline ? execute_data->opline->lineno : 0;
     
     // 遍历白名单规则（OR关系，符合任意一个即可）
     zval *rule;
@@ -384,10 +385,11 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         // 如果所有条件都匹配，则跟踪此函数
         if (matched) {
             // 如果所有条件都匹配，则跟踪此函数
-            trace_debug_log("matched function: file=%s, class=%s, function=%s", 
+            trace_debug_log("matched function: file=%s, class=%s, function=%s, line=%d", 
                            file_name ? file_name : "(null)", 
                            class_name ? class_name : "(null)", 
-                           func_name ? func_name : "(null)");
+                           func_name ? func_name : "(null)",
+                           line_number);
             
             return 1;
         }
