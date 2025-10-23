@@ -331,8 +331,9 @@ int trace_should_trace_function(zend_execute_data *execute_data)
     if (execute_data->func->internal_function.module) {
         module_name = execute_data->func->internal_function.module->name;
     }
-    trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
-    
+    if (module_name) {
+        trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
+    }
     
     // 如果没有设置白名单，不跟踪
     if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
