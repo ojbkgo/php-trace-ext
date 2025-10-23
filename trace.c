@@ -860,11 +860,14 @@ PHP_MINIT_FUNCTION(trace)
     ZVAL_UNDEF(&g_db_callback);
     ZVAL_UNDEF(&g_trace_whitelist);
     
-    // 启用函数调用钩子
-    original_zend_execute_ex = zend_execute_ex;
-    zend_execute_ex = trace_execute_ex;
-    
-    trace_debug_log("[INIT] 钩子已安装");
+    // 只在非CLI模式下启用函数调用钩子
+    if (strcmp(sapi_module.name, "cli") != 0) {
+        original_zend_execute_ex = zend_execute_ex;
+        zend_execute_ex = trace_execute_ex;
+        trace_debug_log("[INIT] 钩子已安装");
+    } else {
+        trace_debug_log("[INIT] CLI模式下不安装钩子");
+    }
     
     return SUCCESS;
 }
