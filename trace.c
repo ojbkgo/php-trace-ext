@@ -659,7 +659,7 @@ void trace_execute_ex(zend_execute_data *execute_data)
         trace_finish_span(span);
         
         // 恢复父span
-        TRACE_G(current_span) = span->parent;
+        // TRACE_G(current_span) = span->parent;
         
         // 调用exit回调
         if (!Z_ISUNDEF(TRACE_G(function_exit_callback))) {
@@ -724,7 +724,7 @@ void trace_execute_ex(zend_execute_data *execute_data)
                     } ZEND_HASH_FOREACH_END();
                 }
             }
-            
+            TRACE_G(current_span) = span->parent;
             // 清理
             int j;
             for (j = 0; j < 3; j++) {
