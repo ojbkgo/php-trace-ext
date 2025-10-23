@@ -475,11 +475,13 @@ void trace_execute_ex(zend_execute_data *execute_data)
     uint32_t arg_count = ZEND_CALL_NUM_ARGS(execute_data);
     if (arg_count > 0) {
         zval *p = ZEND_CALL_ARG(execute_data, 1);
-        for (uint32_t i = 0; i < arg_count; i++) {
+        uint32_t i = 0; 
+        while (i < arg_count) {
             zval arg_copy;
             ZVAL_COPY(&arg_copy, p);
             add_next_index_zval(&args[5], &arg_copy);
             p++;
+            i++;
         }
     }
     
