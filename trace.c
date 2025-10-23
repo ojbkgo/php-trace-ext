@@ -345,8 +345,8 @@ int trace_should_trace_function(zend_execute_data *execute_data)
                            ZSTR_VAL(execute_data->func->op_array.filename) : "";
     int line_number = execute_data->opline ? execute_data->opline->lineno : 0;
 
-    // 如果类名称和函数名称都为空， 
-    if (class_name == NULL && func_name == NULL) {
+    // 如果类名称和函数名称都为空，不跟踪
+    if ((!class_name || class_name[0] == '\0') && (!func_name || func_name[0] == '\0')) {
         return 0;
     }
     
