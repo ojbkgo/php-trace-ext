@@ -319,27 +319,32 @@ int trace_match_patterns(const char *str, zval *patterns)
 int trace_should_trace_function(zend_execute_data *execute_data)
 {
     if (!execute_data || !execute_data->func) {
+        trace_debug_log("不跟踪: execute_data或func为NULL");
         return 0;
     }
     
     // 始终跳过内部函数
     if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
+        trace_debug_log("不跟踪: 内部函数");
         return 0;
     }
     
     // 始终跳过trace扩展自身的函数，避免无限递归
     if (execute_data->func->common.function_name &&
         strncmp(ZSTR_VAL(execute_data->func->common.function_name), "trace_", 6) == 0) {
+        trace_debug_log("不跟踪: trace_扩展自身函数");
         return 0;
     }
     
     // 如果没有设置白名单，不跟踪
     if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
+        trace_debug_log("不跟踪: 未设置白名单");
         return 0;
     }
     
     // 如果白名单不是数组，不跟踪
     if (Z_TYPE(TRACE_G(trace_whitelist)) != IS_ARRAY) {
+        trace_debug_log("不跟踪: 白名单不是数组");
         return 0;
     }
     
@@ -355,23 +360,37 @@ int trace_should_trace_function(zend_execute_data *execute_data)
 
     // 如果类名称和函数名称都为空，不跟踪
     if ((!class_name || class_name[0] == '\0') && (!func_name || func_name[0] == '\0')) {
+        trace_debug_log("不跟踪: 类名和函数名都为空");
         return 0;
     }
     
+    trace_debug_log("检查函数: file=%s, class=%s, function=%s, line=%d", 
+                   file_name ? file_name : "(null)", 
+                   class_name ? class_name : "(null)", 
+                   func_name ? func_name : "(null)",
+                   line_number);
+    
     // 遍历白名单规则（OR关系，符合任意一个即可）
     zval *rule;
+    int rule_index = 0;
     ZEND_HASH_FOREACH_VAL(Z_ARR(TRACE_G(trace_whitelist)), rule) {
         if (Z_TYPE_P(rule) != IS_ARRAY) {
+            trace_debug_log("规则#%d: 不是数组，跳过", rule_index);
+            rule_index++;
             continue;
         }
         
+        trace_debug_log("检查规则#%d", rule_index);
         int matched = 1;  // 假设匹配，逐项检查（AND关系）
         
         // 检查 file_pattern
         zval *file_patterns = zend_hash_str_find(Z_ARR_P(rule), "file_pattern", sizeof("file_pattern") - 1);
         if (file_patterns) {
             if (!trace_match_patterns(file_name, file_patterns)) {
+                trace_debug_log("规则#%d: file_pattern不匹配 '%s'", rule_index, file_name);
                 matched = 0;
+            } else {
+                trace_debug_log("规则#%d: file_pattern匹配成功", rule_index);
             }
         }
         
@@ -380,7 +399,10 @@ int trace_should_trace_function(zend_execute_data *execute_data)
             zval *class_patterns = zend_hash_str_find(Z_ARR_P(rule), "class_pattern", sizeof("class_pattern") - 1);
             if (class_patterns) {
                 if (!trace_match_patterns(class_name, class_patterns)) {
+                    trace_debug_log("规则#%d: class_pattern不匹配 '%s'", rule_index, class_name);
                     matched = 0;
+                } else {
+                    trace_debug_log("规则#%d: class_pattern匹配成功", rule_index);
                 }
             }
         }
@@ -390,25 +412,25 @@ int trace_should_trace_function(zend_execute_data *execute_data)
             zval *func_patterns = zend_hash_str_find(Z_ARR_P(rule), "function_pattern", sizeof("function_pattern") - 1);
             if (func_patterns) {
                 if (!trace_match_patterns(func_name, func_patterns)) {
+                    trace_debug_log("规则#%d: function_pattern不匹配 '%s'", rule_index, func_name);
                     matched = 0;
+                } else {
+                    trace_debug_log("规则#%d: function_pattern匹配成功", rule_index);
                 }
             }
         }
         
         // 如果所有条件都匹配，则跟踪此函数
         if (matched) {
-            // 如果所有条件都匹配，则跟踪此函数
-            trace_debug_log("matched function: file=%s, class=%s, function=%s, line=%d", 
-                           file_name ? file_name : "(null)", 
-                           class_name ? class_name : "(null)", 
-                           func_name ? func_name : "(null)",
-                           line_number);
-            
+            trace_debug_log("规则#%d: 所有条件匹配成功，将跟踪此函数", rule_index);
             return 1;
         }
+        
+        rule_index++;
     } ZEND_HASH_FOREACH_END();
     
     // 白名单中没有匹配的规则，不跟踪
+    trace_debug_log("不跟踪: 没有匹配的白名单规则");
     return 0;
 }
 
