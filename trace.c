@@ -405,9 +405,31 @@ void trace_execute_ex(zend_execute_data *execute_data)
         line_number = execute_data->opline ? execute_data->opline->lineno : 0;
     }
     
-    // 快速路径：如果没有回调或不需要跟踪，直接执行
-    if (!TRACE_G(enabled) || Z_ISUNDEF(g_function_enter_callback) || !trace_should_trace_function(execute_data)) {
-        trace_debug_log("[SKIP] 跳过函数: %s%s%s (在 %s:%d)", 
+    // 快速路径：检查是否需要跟踪
+    if (!TRACE_G(enabled)) {
+        trace_debug_log("[SKIP] 跟踪功能未启用，跳过函数: %s%s%s (在 %s:%d)", 
+                       class_name_debug ? class_name_debug : "", 
+                       class_name_debug ? "::" : "",
+                       func_name_debug ? func_name_debug : "unknown",
+                       file_name_debug ? file_name_debug : "unknown",
+                       line_number);
+        original_zend_execute_ex(execute_data);
+        return;
+    }
+    
+    if (Z_ISUNDEF(g_function_enter_callback)) {
+        trace_debug_log("[SKIP] 未设置函数进入回调，跳过函数: %s%s%s (在 %s:%d)", 
+                       class_name_debug ? class_name_debug : "", 
+                       class_name_debug ? "::" : "",
+                       func_name_debug ? func_name_debug : "unknown",
+                       file_name_debug ? file_name_debug : "unknown",
+                       line_number);
+        original_zend_execute_ex(execute_data);
+        return;
+    }
+    
+    if (!trace_should_trace_function(execute_data)) {
+        trace_debug_log("[SKIP] 函数不在白名单中，跳过函数: %s%s%s (在 %s:%d)", 
                        class_name_debug ? class_name_debug : "", 
                        class_name_debug ? "::" : "",
                        func_name_debug ? func_name_debug : "unknown",
