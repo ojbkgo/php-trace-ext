@@ -200,32 +200,60 @@ void trace_call_user_callback(zval *callback, int argc, zval *argv, zval *retval
     }
 }
 
-// 字符串匹配辅助函数
-int trace_string_match(const char *haystack, const char *needle, const char *match_type)
+// 简单的通配符匹配函数（支持 * 通配符）
+// 例如: "App\\Controller\\*" 匹配 "App\\Controller\\UserController"
+//      "/app/*/test.php" 匹配 "/app/controllers/test.php"
+//      "*" 匹配任何字符串
+int trace_wildcard_match(const char *str, const char *pattern)
 {
-    if (!haystack || !needle) {
-        return 0;
+    if (!pattern || strcmp(pattern, "*") == 0) {
+        return 1;  // 没有pattern或pattern是*，匹配所有
     }
     
-    size_t haystack_len = strlen(haystack);
-    size_t needle_len = strlen(needle);
-    
-    if (strcmp(match_type, "exact") == 0) {
-        return strcmp(haystack, needle) == 0;
-    } else if (strcmp(match_type, "prefix") == 0) {
-        return strncmp(haystack, needle, needle_len) == 0;
-    } else if (strcmp(match_type, "suffix") == 0) {
-        if (needle_len > haystack_len) return 0;
-        return strcmp(haystack + (haystack_len - needle_len), needle) == 0;
-    } else if (strcmp(match_type, "contains") == 0) {
-        return strstr(haystack, needle) != NULL;
-    } else if (strcmp(match_type, "not_contains") == 0) {
-        return strstr(haystack, needle) == NULL;
+    if (!str) {
+        return 0;  // 没有str，不匹配
     }
     
-    return 0;
+    const char *s = str;
+    const char *p = pattern;
+    const char *star_pos = NULL;
+    const char *match_pos = NULL;
+    
+    while (*s) {
+        if (*p == '*') {
+            // 遇到 *，记录位置
+            star_pos = p++;
+            match_pos = s;
+        } else if (*p == *s) {
+            // 字符匹配，继续
+            p++;
+            s++;
+        } else if (star_pos) {
+            // 不匹配，回溯到上一个 *
+            p = star_pos + 1;
+            s = ++match_pos;
+        } else {
+            // 不匹配且没有 * 可以回溯
+            return 0;
+        }
+    }
+    
+    // 处理pattern末尾的 *
+    while (*p == '*') {
+        p++;
+    }
+    
+    // 如果pattern也结束了，则匹配成功
+    return *p == '\0';
 }
 
+// 判断是否应该跟踪函数
+// 白名单格式：[
+//   ['file_pattern' => '/app/*', 'class_pattern' => 'App\\*', 'function_pattern' => 'handle*'],
+//   ['file_pattern' => '/src/*']  // 其他字段省略表示 *（匹配所有）
+// ]
+// 多个规则之间是 OR 关系（符合任意一个即可）
+// 每个规则内部的条件是 AND 关系（都要符合）
 int trace_should_trace_function(zend_execute_data *execute_data)
 {
     if (!execute_data || !execute_data->func) {
@@ -243,26 +271,26 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         return 0;
     }
     
-    // 如果没有设置白名单，跟踪所有函数
+    // 如果没有设置白名单，不跟踪
     if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
         return 0;
     }
     
-    // 如果白名单不是数组，跟踪所有函数
+    // 如果白名单不是数组，不跟踪
     if (Z_TYPE(TRACE_G(trace_whitelist)) != IS_ARRAY) {
         return 0;
     }
     
     // 获取函数信息
     const char *func_name = execute_data->func->common.function_name ? 
-                           ZSTR_VAL(execute_data->func->common.function_name) : NULL;
+                           ZSTR_VAL(execute_data->func->common.function_name) : "";
     const char *class_name = execute_data->func->common.scope ? 
-                            ZSTR_VAL(execute_data->func->common.scope->name) : NULL;
+                            ZSTR_VAL(execute_data->func->common.scope->name) : "";
     const char *file_name = (execute_data->func->type == ZEND_USER_FUNCTION && 
                             execute_data->func->op_array.filename) ?
-                           ZSTR_VAL(execute_data->func->op_array.filename) : NULL;
+                           ZSTR_VAL(execute_data->func->op_array.filename) : "";
     
-    // 遍历白名单规则
+    // 遍历白名单规则（OR关系，符合任意一个即可）
     zval *rule;
     ZEND_HASH_FOREACH_VAL(Z_ARR(TRACE_G(trace_whitelist)), rule) {
         if (Z_TYPE_P(rule) != IS_ARRAY) {
@@ -271,108 +299,36 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         
         int matched = 1;  // 假设匹配，逐项检查（AND关系）
         
-        // 函数名匹配
-        zval *func_exact = zend_hash_str_find(Z_ARR_P(rule), "function", sizeof("function") - 1);
-        if (matched && func_exact && Z_TYPE_P(func_exact) == IS_STRING) {
-            if (!trace_string_match(func_name, Z_STRVAL_P(func_exact), "exact")) {
+        // 检查 file_pattern
+        zval *file_pattern = zend_hash_str_find(Z_ARR_P(rule), "file_pattern", sizeof("file_pattern") - 1);
+        if (file_pattern && Z_TYPE_P(file_pattern) == IS_STRING) {
+            if (!trace_wildcard_match(file_name, Z_STRVAL_P(file_pattern))) {
                 matched = 0;
             }
         }
+        // 如果没有 file_pattern，相当于 *，匹配所有
         
-        zval *func_prefix = zend_hash_str_find(Z_ARR_P(rule), "function_prefix", sizeof("function_prefix") - 1);
-        if (matched && func_prefix && Z_TYPE_P(func_prefix) == IS_STRING) {
-            if (!trace_string_match(func_name, Z_STRVAL_P(func_prefix), "prefix")) {
-                matched = 0;
+        // 检查 class_pattern
+        if (matched) {
+            zval *class_pattern = zend_hash_str_find(Z_ARR_P(rule), "class_pattern", sizeof("class_pattern") - 1);
+            if (class_pattern && Z_TYPE_P(class_pattern) == IS_STRING) {
+                if (!trace_wildcard_match(class_name, Z_STRVAL_P(class_pattern))) {
+                    matched = 0;
+                }
             }
         }
         
-        zval *func_suffix = zend_hash_str_find(Z_ARR_P(rule), "function_suffix", sizeof("function_suffix") - 1);
-        if (matched && func_suffix && Z_TYPE_P(func_suffix) == IS_STRING) {
-            if (!trace_string_match(func_name, Z_STRVAL_P(func_suffix), "suffix")) {
-                matched = 0;
+        // 检查 function_pattern
+        if (matched) {
+            zval *func_pattern = zend_hash_str_find(Z_ARR_P(rule), "function_pattern", sizeof("function_pattern") - 1);
+            if (func_pattern && Z_TYPE_P(func_pattern) == IS_STRING) {
+                if (!trace_wildcard_match(func_name, Z_STRVAL_P(func_pattern))) {
+                    matched = 0;
+                }
             }
         }
         
-        zval *func_contains = zend_hash_str_find(Z_ARR_P(rule), "function_contains", sizeof("function_contains") - 1);
-        if (matched && func_contains && Z_TYPE_P(func_contains) == IS_STRING) {
-            if (!trace_string_match(func_name, Z_STRVAL_P(func_contains), "contains")) {
-                matched = 0;
-            }
-        }
-        
-        zval *func_not_contains = zend_hash_str_find(Z_ARR_P(rule), "function_not_contains", sizeof("function_not_contains") - 1);
-        if (matched && func_not_contains && Z_TYPE_P(func_not_contains) == IS_STRING) {
-            if (!trace_string_match(func_name, Z_STRVAL_P(func_not_contains), "not_contains")) {
-                matched = 0;
-            }
-        }
-        
-        // 类名匹配
-        zval *class_exact = zend_hash_str_find(Z_ARR_P(rule), "class", sizeof("class") - 1);
-        if (matched && class_exact && Z_TYPE_P(class_exact) == IS_STRING) {
-            if (!trace_string_match(class_name, Z_STRVAL_P(class_exact), "exact")) {
-                matched = 0;
-            }
-        }
-        
-        zval *class_prefix = zend_hash_str_find(Z_ARR_P(rule), "class_prefix", sizeof("class_prefix") - 1);
-        if (matched && class_prefix && Z_TYPE_P(class_prefix) == IS_STRING) {
-            if (!trace_string_match(class_name, Z_STRVAL_P(class_prefix), "prefix")) {
-                matched = 0;
-            }
-        }
-        
-        zval *class_suffix = zend_hash_str_find(Z_ARR_P(rule), "class_suffix", sizeof("class_suffix") - 1);
-        if (matched && class_suffix && Z_TYPE_P(class_suffix) == IS_STRING) {
-            if (!trace_string_match(class_name, Z_STRVAL_P(class_suffix), "suffix")) {
-                matched = 0;
-            }
-        }
-        
-        zval *class_contains = zend_hash_str_find(Z_ARR_P(rule), "class_contains", sizeof("class_contains") - 1);
-        if (matched && class_contains && Z_TYPE_P(class_contains) == IS_STRING) {
-            if (!trace_string_match(class_name, Z_STRVAL_P(class_contains), "contains")) {
-                matched = 0;
-            }
-        }
-        
-        // 文件名匹配
-        zval *file_exact = zend_hash_str_find(Z_ARR_P(rule), "file", sizeof("file") - 1);
-        if (matched && file_exact && Z_TYPE_P(file_exact) == IS_STRING) {
-            if (!trace_string_match(file_name, Z_STRVAL_P(file_exact), "exact")) {
-                matched = 0;
-            }
-        }
-        
-        zval *file_prefix = zend_hash_str_find(Z_ARR_P(rule), "file_prefix", sizeof("file_prefix") - 1);
-        if (matched && file_prefix && Z_TYPE_P(file_prefix) == IS_STRING) {
-            if (!trace_string_match(file_name, Z_STRVAL_P(file_prefix), "prefix")) {
-                matched = 0;
-            }
-        }
-        
-        zval *file_suffix = zend_hash_str_find(Z_ARR_P(rule), "file_suffix", sizeof("file_suffix") - 1);
-        if (matched && file_suffix && Z_TYPE_P(file_suffix) == IS_STRING) {
-            if (!trace_string_match(file_name, Z_STRVAL_P(file_suffix), "suffix")) {
-                matched = 0;
-            }
-        }
-        
-        zval *file_contains = zend_hash_str_find(Z_ARR_P(rule), "file_contains", sizeof("file_contains") - 1);
-        if (matched && file_contains && Z_TYPE_P(file_contains) == IS_STRING) {
-            if (!trace_string_match(file_name, Z_STRVAL_P(file_contains), "contains")) {
-                matched = 0;
-            }
-        }
-        
-        zval *file_not_contains = zend_hash_str_find(Z_ARR_P(rule), "file_not_contains", sizeof("file_not_contains") - 1);
-        if (matched && file_not_contains && Z_TYPE_P(file_not_contains) == IS_STRING) {
-            if (!trace_string_match(file_name, Z_STRVAL_P(file_not_contains), "not_contains")) {
-                matched = 0;
-            }
-        }
-        
-        // 如果所有条件都匹配（AND关系），则跟踪此函数
+        // 如果所有条件都匹配，则跟踪此函数
         if (matched) {
             return 1;
         }
