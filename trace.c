@@ -319,38 +319,40 @@ int trace_match_patterns(const char *str, zval *patterns)
 int trace_should_trace_function(zend_execute_data *execute_data)
 {
     if (!execute_data || !execute_data->func) {
-        trace_debug_log("不跟踪: execute_data或func为NULL");
         return 0;
-    }
-    
-    // 只跳过PHP核心内部函数，但保留对mysql、mysqli、redis、curl等扩展的拦截
-    if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
-        // 获取模块名称
-        const char *module_name = NULL;
-        if (execute_data->func->internal_function.module) {
-            module_name = execute_data->func->internal_function.module->name;
-        }
-        
-        // 如果是PHP核心函数且不是我们想要拦截的扩展，则跳过
-        if (!module_name || (
-            strncasecmp(module_name, "mysql", 5) != 0 && 
-            strncasecmp(module_name, "mysqli", 6) != 0 && 
-            strncasecmp(module_name, "redis", 5) != 0 && 
-            strncasecmp(module_name, "curl", 4) != 0 &&
-            strncasecmp(module_name, "pdo", 3) != 0 &&
-            strncasecmp(module_name, "pdo_mysql", 9) != 0)) {
-            trace_debug_log("不跟踪: 内部函数 (模块: %s)", module_name ? module_name : "unknown");
-            return 0;
-        }
-        
-        trace_debug_log("跟踪扩展函数: %s", module_name);
     }
     
     // 始终跳过trace扩展自身的函数，避免无限递归
     if (execute_data->func->common.function_name &&
         strncmp(ZSTR_VAL(execute_data->func->common.function_name), "trace_", 6) == 0) {
-        trace_debug_log("不跟踪: trace_扩展自身函数");
         return 0;
+    }
+    
+    // 如果是内部函数，检查是否是我们想要跟踪的扩展
+    if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
+        const char *module_name = NULL;
+        if (execute_data->func->internal_function.module) {
+            module_name = execute_data->func->internal_function.module->name;
+        }
+        trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
+        // 只跟踪特定的扩展函数（mysql、mysqli、redis、curl、pdo等）
+        if (!module_name) {
+            return 0;  // 没有模块信息，跳过
+        }
+        
+        // 检查是否是我们想要跟踪的扩展
+        if (strcasecmp(module_name, "mysql") != 0 && 
+            strcasecmp(module_name, "mysqli") != 0 && 
+            strcasecmp(module_name, "mysqlnd") != 0 &&
+            strcasecmp(module_name, "redis") != 0 && 
+            strcasecmp(module_name, "curl") != 0 &&
+            strcasecmp(module_name, "pdo") != 0 &&
+            strcasecmp(module_name, "pdo_mysql") != 0 &&
+            strcasecmp(module_name, "PDO") != 0) {
+            return 0;  // 不是目标扩展，跳过
+        }
+        
+        // 是目标扩展，继续后续的白名单检查
     }
     
     // 如果没有设置白名单，不跟踪
@@ -365,27 +367,30 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         return 0;
     }
     
-    // 获取函数信息 文件、 行号
+    // 获取函数信息
     const char *func_name = execute_data->func->common.function_name ? 
                            ZSTR_VAL(execute_data->func->common.function_name) : "";
     const char *class_name = execute_data->func->common.scope ? 
                             ZSTR_VAL(execute_data->func->common.scope->name) : "";
-    const char *file_name = (execute_data->func->type == ZEND_USER_FUNCTION && 
-                            execute_data->func->op_array.filename) ?
-                           ZSTR_VAL(execute_data->func->op_array.filename) : "";
-    int line_number = execute_data->opline ? execute_data->opline->lineno : 0;
+    
+    // 对于内部函数（如mysql_query、redis->get等），使用模块名作为"文件"标识
+    const char *file_name = "";
+    if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
+        // 内部函数：使用模块名
+        if (execute_data->func->internal_function.module) {
+            file_name = execute_data->func->internal_function.module->name;
+        }
+    } else if (execute_data->func->type == ZEND_USER_FUNCTION) {
+        // 用户函数：使用实际文件路径
+        if (execute_data->func->op_array.filename) {
+            file_name = ZSTR_VAL(execute_data->func->op_array.filename);
+        }
+    }
 
     // 如果类名称和函数名称都为空，不跟踪
     if ((!class_name || class_name[0] == '\0') && (!func_name || func_name[0] == '\0')) {
-        trace_debug_log("不跟踪: 类名和函数名都为空");
         return 0;
     }
-    
-    trace_debug_log("检查函数: file=%s, class=%s, function=%s, line=%d", 
-                   file_name ? file_name : "(null)", 
-                   class_name ? class_name : "(null)", 
-                   func_name ? func_name : "(null)",
-                   line_number);
     
     // 遍历白名单规则（OR关系，符合任意一个即可）
     zval *rule;
