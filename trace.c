@@ -327,36 +327,12 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         strncmp(ZSTR_VAL(execute_data->func->common.function_name), "trace_", 6) == 0) {
         return 0;
     }
+    const char *module_name = NULL;
     if (execute_data->func->internal_function.module) {
         module_name = execute_data->func->internal_function.module->name;
     }
     trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
-    // 如果是内部函数，检查是否是我们想要跟踪的扩展
-    if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
-        const char *module_name = NULL;
-        if (execute_data->func->internal_function.module) {
-            module_name = execute_data->func->internal_function.module->name;
-        }
-        trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
-        // 只跟踪特定的扩展函数（mysql、mysqli、redis、curl、pdo等）
-        if (!module_name) {
-            return 0;  // 没有模块信息，跳过
-        }
-        
-        // 检查是否是我们想要跟踪的扩展
-        if (strcasecmp(module_name, "mysql") != 0 && 
-            strcasecmp(module_name, "mysqli") != 0 && 
-            strcasecmp(module_name, "mysqlnd") != 0 &&
-            strcasecmp(module_name, "redis") != 0 && 
-            strcasecmp(module_name, "curl") != 0 &&
-            strcasecmp(module_name, "pdo") != 0 &&
-            strcasecmp(module_name, "pdo_mysql") != 0 &&
-            strcasecmp(module_name, "PDO") != 0) {
-            return 0;  // 不是目标扩展，跳过
-        }
-        
-        // 是目标扩展，继续后续的白名单检查
-    }
+    
     
     // 如果没有设置白名单，不跟踪
     if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
