@@ -383,6 +383,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         
         // 如果所有条件都匹配，则跟踪此函数
         if (matched) {
+            trace_debug_log("matched: %s, %s, %s", file_name, class_name, func_name);
             return 1;
         }
     } ZEND_HASH_FOREACH_END();
