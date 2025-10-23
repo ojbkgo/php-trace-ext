@@ -344,6 +344,11 @@ int trace_should_trace_function(zend_execute_data *execute_data)
                             execute_data->func->op_array.filename) ?
                            ZSTR_VAL(execute_data->func->op_array.filename) : "";
     int line_number = execute_data->opline ? execute_data->opline->lineno : 0;
+
+    // 如果类名称和函数名称都为空， 
+    if (class_name == NULL && func_name == NULL) {
+        return 0;
+    }
     
     // 遍历白名单规则（OR关系，符合任意一个即可）
     zval *rule;
