@@ -327,13 +327,20 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         strncmp(ZSTR_VAL(execute_data->func->common.function_name), "trace_", 6) == 0) {
         return 0;
     }
-    const char *module_name = NULL;
-    if (execute_data->func->internal_function.module) {
-        module_name = execute_data->func->internal_function.module->name;
+
+    // 不跟踪内部函数
+    if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
+        const char *module_name = NULL;
+        if (execute_data->func->internal_function.module) {
+            module_name = execute_data->func->internal_function.module->name;
+        }
+        if (module_name) {
+            trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
+        }
+        return 0;
     }
-    if (module_name) {
-        trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
-    }
+
+   
     
     // 如果没有设置白名单，不跟踪
     if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
