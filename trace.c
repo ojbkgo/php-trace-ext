@@ -323,10 +323,26 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         return 0;
     }
     
-    // 始终跳过内部函数
+    // 只跳过PHP核心内部函数，但保留对mysql、mysqli、redis、curl等扩展的拦截
     if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
-        trace_debug_log("不跟踪: 内部函数");
-        return 0;
+        // 获取模块名称
+        const char *module_name = NULL;
+        if (execute_data->func->internal_function.module) {
+            module_name = execute_data->func->internal_function.module->name;
+        }
+        
+        // 如果是PHP核心函数且不是我们想要拦截的扩展，则跳过
+        if (!module_name || (
+            strncasecmp(module_name, "mysql", 5) != 0 && 
+            strncasecmp(module_name, "mysqli", 6) != 0 && 
+            strncasecmp(module_name, "redis", 5) != 0 && 
+            strncasecmp(module_name, "curl", 4) != 0 &&
+            strncasecmp(module_name, "pdo", 3) != 0)) {
+            trace_debug_log("不跟踪: 内部函数 (模块: %s)", module_name ? module_name : "unknown");
+            return 0;
+        }
+        
+        trace_debug_log("跟踪扩展函数: %s", module_name);
     }
     
     // 始终跳过trace扩展自身的函数，避免无限递归
