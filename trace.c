@@ -330,13 +330,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
 
     // 不跟踪内部函数
     if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
-        const char *module_name = NULL;
-        if (execute_data->func->internal_function.module) {
-            module_name = execute_data->func->internal_function.module->name;
-        }
-        if (module_name) {
-            trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
-        }
+        trace_debug_log("不跟踪: 内部函数: %s", execute_data->func->common.function_name ? ZSTR_VAL(execute_data->func->common.function_name) : "unknown");
         return 0;
     }
 
