@@ -34,6 +34,7 @@ ZEND_BEGIN_MODULE_GLOBALS(trace)
     trace_span_t *root_span;
     zend_array *all_spans;
     zend_long span_counter;
+    zend_bool in_trace_callback;  // 重入保护标志：防止在回调中再次触发追踪
 ZEND_END_MODULE_GLOBALS(trace)
 
 #ifdef ZTS
@@ -196,8 +197,14 @@ void trace_call_user_callback(zval *callback, int argc, zval *argv, zval *retval
     trace_debug_log("[CALLBACK] 调用回调: %s (参数数量: %d)", 
                    callback_name ? ZSTR_VAL(callback_name) : "unknown", argc);
     
+    // ⚠️ 设置重入保护标志，防止回调中的函数调用再次触发追踪
+    TRACE_G(in_trace_callback) = 1;
+    
     // 调用用户函数
     int result = call_user_function(CG(function_table), NULL, callback, retval, argc, argv);
+    
+    // ⚠️ 清除重入保护标志
+    TRACE_G(in_trace_callback) = 0;
     
     if (result != SUCCESS) {
         trace_debug_log("[ERROR] 回调调用失败: %s (错误码: %d)", 
@@ -514,6 +521,12 @@ void trace_execute_ex(zend_execute_data *execute_data)
     trace_span_t *span = NULL;
     zval callback_result;
     ZVAL_UNDEF(&callback_result);
+    
+    // ⚠️ 重入保护：如果正在执行回调，直接调用原始函数，避免无限递归
+    if (TRACE_G(in_trace_callback)) {
+        original_zend_execute_ex(execute_data);
+        return;
+    }
     
     // 获取函数详细信息用于调试
     const char *func_name_debug = NULL;
@@ -999,6 +1012,7 @@ static void php_trace_init_globals(zend_trace_globals *trace_globals)
     trace_globals->root_span = NULL;
     trace_globals->all_spans = NULL;
     trace_globals->span_counter = 0;
+    trace_globals->in_trace_callback = 0;  // 初始化重入保护标志
 }
 
 // 模块初始化
