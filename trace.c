@@ -53,6 +53,7 @@ ZEND_DECLARE_MODULE_GLOBALS(trace)
 
 // 原始函数指针（模块级，全局共享）
 void (*original_zend_execute_ex)(zend_execute_data *execute_data) = NULL;
+void (*original_zend_execute_internal)(zend_execute_data *execute_data, zval *return_value) = NULL;
 
 // 参数信息
 ZEND_BEGIN_ARG_INFO_EX(arginfo_trace_get_trace_id, 0, 0, 0)
@@ -316,9 +317,15 @@ int trace_match_patterns(const char *str, zval *patterns)
 // 多个规则之间是 OR 关系（符合任意一个即可）
 // 每个规则内部的条件是 AND 关系（都要符合）
 // 每个字段的多个pattern也是 AND 关系（都要符合）
+// 判断是否应该跟踪用户函数（PHP代码）
 int trace_should_trace_function(zend_execute_data *execute_data)
 {
     if (!execute_data || !execute_data->func) {
+        return 0;
+    }
+    
+    // 只处理用户函数
+    if (execute_data->func->type != ZEND_USER_FUNCTION) {
         return 0;
     }
     
@@ -327,14 +334,6 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         strncmp(ZSTR_VAL(execute_data->func->common.function_name), "trace_", 6) == 0) {
         return 0;
     }
-
-    // 不跟踪内部函数
-    if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
-        trace_debug_log("不跟踪: 内部函数: %s", execute_data->func->common.function_name ? ZSTR_VAL(execute_data->func->common.function_name) : "unknown");
-        return 0;
-    }
-
-   
     
     // 如果没有设置白名单，不跟踪
     if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
@@ -354,7 +353,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
     const char *class_name = execute_data->func->common.scope ? 
                             ZSTR_VAL(execute_data->func->common.scope->name) : "";
     
-    // 对于内部函数（如mysql_query、redis->get等），使用模块名作为"文件"标识
+    // 获取文件路径
     const char *file_name = "";
     if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
         // 内部函数：使用模块名
@@ -370,6 +369,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
 
     // 如果类名称和函数名称都为空，不跟踪
     if ((!class_name || class_name[0] == '\0') && (!func_name || func_name[0] == '\0')) {
+        trace_debug_log("不跟踪: 类名和函数名都为空");
         return 0;
     }
     
@@ -383,7 +383,9 @@ int trace_should_trace_function(zend_execute_data *execute_data)
             continue;
         }
         
-        trace_debug_log("检查规则#%d", rule_index);
+        trace_debug_log("检查规则#%d: 文件='%s', 类='%s', 函数='%s'", 
+                       rule_index, file_name, class_name, func_name);
+        
         int matched = 1;  // 假设匹配，逐项检查（AND关系）
         
         // 检查 file_pattern
@@ -434,6 +436,88 @@ int trace_should_trace_function(zend_execute_data *execute_data)
     
     // 白名单中没有匹配的规则，不跟踪
     trace_debug_log("不跟踪: 没有匹配的白名单规则");
+    return 0;
+}
+
+// 判断是否应该跟踪内部函数（扩展函数：mysql、redis、curl等）
+int trace_should_trace_internal_function(zend_execute_data *execute_data)
+{
+    if (!execute_data || !execute_data->func) {
+        return 0;
+    }
+    
+    // 只处理内部函数
+    if (execute_data->func->type != ZEND_INTERNAL_FUNCTION) {
+        return 0;
+    }
+    
+    // 获取模块名和函数名
+    const char *module_name = NULL;
+    if (execute_data->func->internal_function.module) {
+        module_name = execute_data->func->internal_function.module->name;
+    }
+    
+    const char *func_name = execute_data->func->common.function_name ? 
+                           ZSTR_VAL(execute_data->func->common.function_name) : "";
+    const char *class_name = execute_data->func->common.scope ? 
+                            ZSTR_VAL(execute_data->func->common.scope->name) : "";
+    
+    // 没有模块名，跳过
+    if (!module_name) {
+        return 0;
+    }
+    
+    // 如果没有设置白名单，不跟踪
+    if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
+        return 0;
+    }
+    
+    if (Z_TYPE(TRACE_G(trace_whitelist)) != IS_ARRAY) {
+        return 0;
+    }
+    
+    // 遍历白名单规则（OR关系）
+    zval *rule;
+    ZEND_HASH_FOREACH_VAL(Z_ARR(TRACE_G(trace_whitelist)), rule) {
+        if (Z_TYPE_P(rule) != IS_ARRAY) {
+            continue;
+        }
+        
+        int matched = 1;
+        
+        // 检查 module_pattern（对于内部函数，使用module而不是file）
+        zval *module_patterns = zend_hash_str_find(Z_ARR_P(rule), "module_pattern", sizeof("module_pattern") - 1);
+        if (module_patterns) {
+            if (!trace_match_patterns(module_name, module_patterns)) {
+                matched = 0;
+            }
+        }
+        
+        // 检查 class_pattern
+        if (matched) {
+            zval *class_patterns = zend_hash_str_find(Z_ARR_P(rule), "class_pattern", sizeof("class_pattern") - 1);
+            if (class_patterns) {
+                if (!trace_match_patterns(class_name, class_patterns)) {
+                    matched = 0;
+                }
+            }
+        }
+        
+        // 检查 function_pattern
+        if (matched) {
+            zval *func_patterns = zend_hash_str_find(Z_ARR_P(rule), "function_pattern", sizeof("function_pattern") - 1);
+            if (func_patterns) {
+                if (!trace_match_patterns(func_name, func_patterns)) {
+                    matched = 0;
+                }
+            }
+        }
+        
+        if (matched) {
+            return 1;
+        }
+    } ZEND_HASH_FOREACH_END();
+    
     return 0;
 }
 
@@ -611,6 +695,217 @@ void trace_execute_ex(zend_execute_data *execute_data)
                             zval tag_copy;
                             ZVAL_COPY(&tag_copy, tag_val);
                             // 更新或添加tag
+                            zend_hash_update(span->tags, tag_key, &tag_copy);
+                        }
+                    } ZEND_HASH_FOREACH_END();
+                }
+            }
+            
+            // 清理
+            int j;
+            for (j = 0; j < 3; j++) {
+                zval_dtor(&exit_args[j]);
+            }
+            if (!Z_ISUNDEF(exit_result)) {
+                zval_dtor(&exit_result);
+            }
+        }
+    }
+}
+
+// 内部函数执行钩子（处理扩展函数：mysql、redis、curl等）
+void trace_execute_internal(zend_execute_data *execute_data, zval *return_value)
+{
+    trace_span_t *span = NULL;
+    zval callback_result;
+    ZVAL_UNDEF(&callback_result);
+    
+    // ⚠️ 重入保护
+    if (TRACE_G(in_trace_callback)) {
+        if (original_zend_execute_internal) {
+            original_zend_execute_internal(execute_data, return_value);
+        } else {
+            execute_internal(execute_data, return_value);
+        }
+        return;
+    }
+    
+    // 快速路径：检查是否需要跟踪
+    if (!TRACE_G(enabled) || Z_ISUNDEF(TRACE_G(function_enter_callback))) {
+        if (original_zend_execute_internal) {
+            original_zend_execute_internal(execute_data, return_value);
+        } else {
+            execute_internal(execute_data, return_value);
+        }
+        return;
+    }
+    
+    if (!trace_should_trace_internal_function(execute_data)) {
+        if (original_zend_execute_internal) {
+            original_zend_execute_internal(execute_data, return_value);
+        } else {
+            execute_internal(execute_data, return_value);
+        }
+        return;
+    }
+    
+    // 安全检查
+    if (!execute_data || !execute_data->func) {
+        if (original_zend_execute_internal) {
+            original_zend_execute_internal(execute_data, return_value);
+        } else {
+            execute_internal(execute_data, return_value);
+        }
+        return;
+    }
+    
+    // 获取调用方上下文
+    const char *caller_file = NULL;
+    int caller_line = 0;
+    if (execute_data->prev_execute_data) {
+        zend_execute_data *caller = execute_data->prev_execute_data;
+        if (caller->func && caller->func->type == ZEND_USER_FUNCTION) {
+            if (caller->func->op_array.filename) {
+                caller_file = ZSTR_VAL(caller->func->op_array.filename);
+            }
+            if (caller->opline) {
+                caller_line = caller->opline->lineno;
+            }
+        }
+    }
+    
+    // 准备回调参数
+    zval args[6];
+    
+    // 函数名
+    if (execute_data->func->common.function_name) {
+        ZVAL_STR_COPY(&args[0], execute_data->func->common.function_name);
+    } else {
+        ZVAL_STRING(&args[0], "anonymous");
+    }
+    
+    // 类名
+    if (execute_data->func->common.scope) {
+        ZVAL_STR_COPY(&args[1], execute_data->func->common.scope->name);
+    } else {
+        ZVAL_NULL(&args[1]);
+    }
+    
+    // 调用方文件名
+    if (caller_file) {
+        ZVAL_STRING(&args[2], caller_file);
+    } else {
+        ZVAL_NULL(&args[2]);
+    }
+    
+    // 调用方行号
+    ZVAL_LONG(&args[3], caller_line);
+    
+    // 父Span ID
+    if (TRACE_G(current_span) && TRACE_G(current_span)->span_id) {
+        ZVAL_STR_COPY(&args[4], TRACE_G(current_span)->span_id);
+    } else {
+        ZVAL_NULL(&args[4]);
+    }
+    
+    // 函数参数数组
+    array_init(&args[5]);
+    uint32_t arg_count = ZEND_CALL_NUM_ARGS(execute_data);
+    if (arg_count > 0) {
+        zval *p = ZEND_CALL_ARG(execute_data, 1);
+        uint32_t i = 0;
+        while (i < arg_count) {
+            zval arg_copy;
+            ZVAL_COPY(&arg_copy, p);
+            add_next_index_zval(&args[5], &arg_copy);
+            p++;
+            i++;
+        }
+    }
+    
+    // 调用用户回调
+    trace_call_user_callback(&TRACE_G(function_enter_callback), 6, args, &callback_result);
+    
+    // 根据回调返回值创建span
+    if (Z_TYPE(callback_result) == IS_ARRAY) {
+        zval *operation_name = zend_hash_str_find(Z_ARR(callback_result), "operation_name", sizeof("operation_name") - 1);
+        if (operation_name && Z_TYPE_P(operation_name) == IS_STRING && Z_STRLEN_P(operation_name) > 0) {
+            span = trace_create_span(Z_STRVAL_P(operation_name), TRACE_G(current_span));
+            if (span) {
+                TRACE_G(current_span) = span;
+                
+                // 处理callback返回的tags
+                zval *tags = zend_hash_str_find(Z_ARR(callback_result), "tags", sizeof("tags") - 1);
+                if (tags && Z_TYPE_P(tags) == IS_ARRAY) {
+                    zend_string *tag_key;
+                    zval *tag_val;
+                    ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARR_P(tags), tag_key, tag_val) {
+                        if (tag_key) {
+                            zval tag_copy;
+                            ZVAL_COPY(&tag_copy, tag_val);
+                            zend_hash_add(span->tags, tag_key, &tag_copy);
+                        }
+                    } ZEND_HASH_FOREACH_END();
+                }
+            }
+        }
+    }
+    
+    // 清理回调参数
+    int i;
+    for (i = 0; i < 6; i++) {
+        zval_dtor(&args[i]);
+    }
+    if (!Z_ISUNDEF(callback_result)) {
+        zval_dtor(&callback_result);
+    }
+    
+    // 调用原始内部函数
+    if (original_zend_execute_internal) {
+        original_zend_execute_internal(execute_data, return_value);
+    } else {
+        execute_internal(execute_data, return_value);
+    }
+    
+    // 函数执行完成后处理
+    if (span) {
+        // 完成span
+        trace_finish_span(span);
+        
+        // 恢复父span
+        TRACE_G(current_span) = span->parent;
+        
+        // 调用exit回调
+        if (!Z_ISUNDEF(TRACE_G(function_exit_callback))) {
+            zval exit_args[3];
+            
+            // span_id
+            ZVAL_STR_COPY(&exit_args[0], span->span_id);
+            
+            // duration
+            ZVAL_DOUBLE(&exit_args[1], span->end_time - span->start_time);
+            
+            // 返回值
+            if (return_value && !Z_ISUNDEF_P(return_value)) {
+                ZVAL_COPY(&exit_args[2], return_value);
+            } else {
+                ZVAL_NULL(&exit_args[2]);
+            }
+            
+            zval exit_result;
+            ZVAL_UNDEF(&exit_result);
+            trace_call_user_callback(&TRACE_G(function_exit_callback), 3, exit_args, &exit_result);
+            
+            // 处理exit回调返回的tags
+            if (Z_TYPE(exit_result) == IS_ARRAY) {
+                zval *exit_tags = zend_hash_str_find(Z_ARR(exit_result), "tags", sizeof("tags") - 1);
+                if (exit_tags && Z_TYPE_P(exit_tags) == IS_ARRAY && span->tags) {
+                    zend_string *tag_key;
+                    zval *tag_val;
+                    ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARR_P(exit_tags), tag_key, tag_val) {
+                        if (tag_key) {
+                            zval tag_copy;
+                            ZVAL_COPY(&tag_copy, tag_val);
                             zend_hash_update(span->tags, tag_key, &tag_copy);
                         }
                     } ZEND_HASH_FOREACH_END();
@@ -950,8 +1245,13 @@ PHP_MINIT_FUNCTION(trace)
                   strcmp(sapi_module.name, "embed") == 0);
     
     if (!is_cli) {
+        // Hook 用户函数（PHP代码）
         original_zend_execute_ex = zend_execute_ex;
         zend_execute_ex = trace_execute_ex;
+        
+        // Hook 内部函数（扩展函数：mysql、redis、curl等）
+        original_zend_execute_internal = zend_execute_internal;
+        zend_execute_internal = trace_execute_internal;
     }
     
     return SUCCESS;
@@ -960,8 +1260,12 @@ PHP_MINIT_FUNCTION(trace)
 // 模块关闭
 PHP_MSHUTDOWN_FUNCTION(trace)
 {
+    // 恢复原始函数指针
     if (original_zend_execute_ex) {
         zend_execute_ex = original_zend_execute_ex;
+    }
+    if (original_zend_execute_internal) {
+        zend_execute_internal = original_zend_execute_internal;
     }
     
     UNREGISTER_INI_ENTRIES();
