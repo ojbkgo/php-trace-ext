@@ -165,14 +165,6 @@ trace_span_t* trace_create_span(const char *operation_name, trace_span_t *parent
         zend_hash_next_index_insert(TRACE_G(all_spans), &span_zval);
     }
     
-    // 记录当前创建的span
-
-        trace_debug_log("创建新span: operation=%s, span_id=%s, parent_id=%s, time=%.6f", 
-                       ZSTR_VAL(span->operation_name), 
-                       ZSTR_VAL(span->span_id), 
-                       span->parent_id ? ZSTR_VAL(span->parent_id) : "NULL",
-                       span->start_time);
-    
     return span;
 }
 
@@ -618,6 +610,33 @@ void trace_execute_ex(zend_execute_data *execute_data)
                         }
                     } ZEND_HASH_FOREACH_END();
                 }
+                
+                // 处理callback返回的logs
+                zval *logs = zend_hash_str_find(Z_ARR(callback_result), "logs", sizeof("logs") - 1);
+                if (logs && Z_TYPE_P(logs) == IS_ARRAY && span->logs) {
+                    zval *log_item;
+                    ZEND_HASH_FOREACH_VAL(Z_ARR_P(logs), log_item) {
+                        if (Z_TYPE_P(log_item) == IS_ARRAY) {
+                            // 复制log条目并添加时间戳
+                            zval log_entry;
+                            array_init(&log_entry);
+                            
+                            zval *level = zend_hash_str_find(Z_ARR_P(log_item), "level", sizeof("level") - 1);
+                            if (level && Z_TYPE_P(level) == IS_STRING) {
+                                add_assoc_str(&log_entry, "level", zend_string_copy(Z_STR_P(level)));
+                            }
+                            
+                            zval *message = zend_hash_str_find(Z_ARR_P(log_item), "message", sizeof("message") - 1);
+                            if (message && Z_TYPE_P(message) == IS_STRING) {
+                                add_assoc_str(&log_entry, "message", zend_string_copy(Z_STR_P(message)));
+                            }
+                            
+                            add_assoc_double(&log_entry, "timestamp", trace_get_microtime());
+                            
+                            zend_hash_next_index_insert(span->logs, &log_entry);
+                        }
+                    } ZEND_HASH_FOREACH_END();
+                }
             }
         }
     }
@@ -675,6 +694,32 @@ void trace_execute_ex(zend_execute_data *execute_data)
                             ZVAL_COPY(&tag_copy, tag_val);
                             // 更新或添加tag
                             zend_hash_update(span->tags, tag_key, &tag_copy);
+                        }
+                    } ZEND_HASH_FOREACH_END();
+                }
+                
+                // 处理exit回调返回的logs，合并到span
+                zval *exit_logs = zend_hash_str_find(Z_ARR(exit_result), "logs", sizeof("logs") - 1);
+                if (exit_logs && Z_TYPE_P(exit_logs) == IS_ARRAY && span->logs) {
+                    zval *log_item;
+                    ZEND_HASH_FOREACH_VAL(Z_ARR_P(exit_logs), log_item) {
+                        if (Z_TYPE_P(log_item) == IS_ARRAY) {
+                            zval log_entry;
+                            array_init(&log_entry);
+                            
+                            zval *level = zend_hash_str_find(Z_ARR_P(log_item), "level", sizeof("level") - 1);
+                            if (level && Z_TYPE_P(level) == IS_STRING) {
+                                add_assoc_str(&log_entry, "level", zend_string_copy(Z_STR_P(level)));
+                            }
+                            
+                            zval *message = zend_hash_str_find(Z_ARR_P(log_item), "message", sizeof("message") - 1);
+                            if (message && Z_TYPE_P(message) == IS_STRING) {
+                                add_assoc_str(&log_entry, "message", zend_string_copy(Z_STR_P(message)));
+                            }
+                            
+                            add_assoc_double(&log_entry, "timestamp", trace_get_microtime());
+                            
+                            zend_hash_next_index_insert(span->logs, &log_entry);
                         }
                     } ZEND_HASH_FOREACH_END();
                 }
@@ -826,6 +871,32 @@ void trace_execute_internal(zend_execute_data *execute_data, zval *return_value)
                         }
                     } ZEND_HASH_FOREACH_END();
                 }
+                
+                // 处理callback返回的logs
+                zval *logs = zend_hash_str_find(Z_ARR(callback_result), "logs", sizeof("logs") - 1);
+                if (logs && Z_TYPE_P(logs) == IS_ARRAY && span->logs) {
+                    zval *log_item;
+                    ZEND_HASH_FOREACH_VAL(Z_ARR_P(logs), log_item) {
+                        if (Z_TYPE_P(log_item) == IS_ARRAY) {
+                            zval log_entry;
+                            array_init(&log_entry);
+                            
+                            zval *level = zend_hash_str_find(Z_ARR_P(log_item), "level", sizeof("level") - 1);
+                            if (level && Z_TYPE_P(level) == IS_STRING) {
+                                add_assoc_str(&log_entry, "level", zend_string_copy(Z_STR_P(level)));
+                            }
+                            
+                            zval *message = zend_hash_str_find(Z_ARR_P(log_item), "message", sizeof("message") - 1);
+                            if (message && Z_TYPE_P(message) == IS_STRING) {
+                                add_assoc_str(&log_entry, "message", zend_string_copy(Z_STR_P(message)));
+                            }
+                            
+                            add_assoc_double(&log_entry, "timestamp", trace_get_microtime());
+                            
+                            zend_hash_next_index_insert(span->logs, &log_entry);
+                        }
+                    } ZEND_HASH_FOREACH_END();
+                }
             }
         }
     }
@@ -886,6 +957,32 @@ void trace_execute_internal(zend_execute_data *execute_data, zval *return_value)
                             zval tag_copy;
                             ZVAL_COPY(&tag_copy, tag_val);
                             zend_hash_update(span->tags, tag_key, &tag_copy);
+                        }
+                    } ZEND_HASH_FOREACH_END();
+                }
+                
+                // 处理exit回调返回的logs
+                zval *exit_logs = zend_hash_str_find(Z_ARR(exit_result), "logs", sizeof("logs") - 1);
+                if (exit_logs && Z_TYPE_P(exit_logs) == IS_ARRAY && span->logs) {
+                    zval *log_item;
+                    ZEND_HASH_FOREACH_VAL(Z_ARR_P(exit_logs), log_item) {
+                        if (Z_TYPE_P(log_item) == IS_ARRAY) {
+                            zval log_entry;
+                            array_init(&log_entry);
+                            
+                            zval *level = zend_hash_str_find(Z_ARR_P(log_item), "level", sizeof("level") - 1);
+                            if (level && Z_TYPE_P(level) == IS_STRING) {
+                                add_assoc_str(&log_entry, "level", zend_string_copy(Z_STR_P(level)));
+                            }
+                            
+                            zval *message = zend_hash_str_find(Z_ARR_P(log_item), "message", sizeof("message") - 1);
+                            if (message && Z_TYPE_P(message) == IS_STRING) {
+                                add_assoc_str(&log_entry, "message", zend_string_copy(Z_STR_P(message)));
+                            }
+                            
+                            add_assoc_double(&log_entry, "timestamp", trace_get_microtime());
+                            
+                            zend_hash_next_index_insert(span->logs, &log_entry);
                         }
                     } ZEND_HASH_FOREACH_END();
                 }
