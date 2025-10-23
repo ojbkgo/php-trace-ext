@@ -40,7 +40,8 @@ ZEND_BEGIN_MODULE_GLOBALS(trace)
     zval function_exit_callback;
     zval curl_callback;
     zval db_callback;
-    zval trace_whitelist;  // 白名单规则
+    zval trace_whitelist;           // 用户函数白名单（file_pattern）
+    zval internal_trace_whitelist;  // 内部函数白名单（module_pattern）
 ZEND_END_MODULE_GLOBALS(trace)
 
 #ifdef ZTS
@@ -337,13 +338,11 @@ int trace_should_trace_function(zend_execute_data *execute_data)
     
     // 如果没有设置白名单，不跟踪
     if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
-        trace_debug_log("不跟踪: 未设置白名单");
         return 0;
     }
     
     // 如果白名单不是数组，不跟踪
     if (Z_TYPE(TRACE_G(trace_whitelist)) != IS_ARRAY) {
-        trace_debug_log("不跟踪: 白名单不是数组");
         return 0;
     }
     
@@ -369,22 +368,15 @@ int trace_should_trace_function(zend_execute_data *execute_data)
 
     // 如果类名称和函数名称都为空，不跟踪
     if ((!class_name || class_name[0] == '\0') && (!func_name || func_name[0] == '\0')) {
-        trace_debug_log("不跟踪: 类名和函数名都为空");
         return 0;
     }
     
     // 遍历白名单规则（OR关系，符合任意一个即可）
     zval *rule;
-    int rule_index = 0;
     ZEND_HASH_FOREACH_VAL(Z_ARR(TRACE_G(trace_whitelist)), rule) {
         if (Z_TYPE_P(rule) != IS_ARRAY) {
-            trace_debug_log("规则#%d: 不是数组，跳过", rule_index);
-            rule_index++;
             continue;
         }
-        
-        trace_debug_log("检查规则#%d: 文件='%s', 类='%s', 函数='%s'", 
-                       rule_index, file_name, class_name, func_name);
         
         int matched = 1;  // 假设匹配，逐项检查（AND关系）
         
@@ -392,10 +384,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         zval *file_patterns = zend_hash_str_find(Z_ARR_P(rule), "file_pattern", sizeof("file_pattern") - 1);
         if (file_patterns) {
             if (!trace_match_patterns(file_name, file_patterns)) {
-                trace_debug_log("规则#%d: file_pattern不匹配 '%s'", rule_index, file_name);
                 matched = 0;
-            } else {
-                trace_debug_log("规则#%d: file_pattern匹配成功", rule_index);
             }
         }
         
@@ -404,10 +393,7 @@ int trace_should_trace_function(zend_execute_data *execute_data)
             zval *class_patterns = zend_hash_str_find(Z_ARR_P(rule), "class_pattern", sizeof("class_pattern") - 1);
             if (class_patterns) {
                 if (!trace_match_patterns(class_name, class_patterns)) {
-                    trace_debug_log("规则#%d: class_pattern不匹配 '%s'", rule_index, class_name);
                     matched = 0;
-                } else {
-                    trace_debug_log("规则#%d: class_pattern匹配成功", rule_index);
                 }
             }
         }
@@ -417,25 +403,18 @@ int trace_should_trace_function(zend_execute_data *execute_data)
             zval *func_patterns = zend_hash_str_find(Z_ARR_P(rule), "function_pattern", sizeof("function_pattern") - 1);
             if (func_patterns) {
                 if (!trace_match_patterns(func_name, func_patterns)) {
-                    trace_debug_log("规则#%d: function_pattern不匹配 '%s'", rule_index, func_name);
                     matched = 0;
-                } else {
-                    trace_debug_log("规则#%d: function_pattern匹配成功", rule_index);
                 }
             }
         }
         
         // 如果所有条件都匹配，则跟踪此函数
         if (matched) {
-            trace_debug_log("规则#%d: 所有条件匹配成功，将跟踪此函数", rule_index);
             return 1;
         }
-        
-        rule_index++;
     } ZEND_HASH_FOREACH_END();
     
     // 白名单中没有匹配的规则，不跟踪
-    trace_debug_log("不跟踪: 没有匹配的白名单规则");
     return 0;
 }
 
@@ -467,18 +446,18 @@ int trace_should_trace_internal_function(zend_execute_data *execute_data)
         return 0;
     }
     
-    // 如果没有设置白名单，不跟踪
-    if (Z_ISUNDEF(TRACE_G(trace_whitelist))) {
+    // 如果没有设置内部函数白名单，不跟踪
+    if (Z_ISUNDEF(TRACE_G(internal_trace_whitelist))) {
         return 0;
     }
     
-    if (Z_TYPE(TRACE_G(trace_whitelist)) != IS_ARRAY) {
+    if (Z_TYPE(TRACE_G(internal_trace_whitelist)) != IS_ARRAY) {
         return 0;
     }
     
-    // 遍历白名单规则（OR关系）
+    // 遍历内部函数白名单规则（OR关系）
     zval *rule;
-    ZEND_HASH_FOREACH_VAL(Z_ARR(TRACE_G(trace_whitelist)), rule) {
+    ZEND_HASH_FOREACH_VAL(Z_ARR(TRACE_G(internal_trace_whitelist)), rule) {
         if (Z_TYPE_P(rule) != IS_ARRAY) {
             continue;
         }
@@ -1103,6 +1082,26 @@ PHP_FUNCTION(trace_set_callback_whitelist)
     RETURN_TRUE;
 }
 
+// 设置内部函数白名单（用于mysql、redis、curl等扩展）
+PHP_FUNCTION(trace_set_internal_whitelist)
+{
+    zval *rules;
+    
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &rules) == FAILURE) {
+        trace_debug_log("[ERROR] trace_set_internal_whitelist: 参数解析失败");
+        RETURN_FALSE;
+    }
+    
+    // 存储内部函数白名单规则
+    if (!Z_ISUNDEF(TRACE_G(internal_trace_whitelist))) {
+        zval_dtor(&TRACE_G(internal_trace_whitelist));
+    }
+    
+    ZVAL_COPY(&TRACE_G(internal_trace_whitelist), rules);
+    
+    RETURN_TRUE;
+}
+
 // 重置trace（用于CLI模式）
 PHP_FUNCTION(trace_reset)
 {
@@ -1200,6 +1199,7 @@ const zend_function_entry trace_functions[] = {
     PHP_FE(trace_add_tag, arginfo_trace_add_tag)
     PHP_FE(trace_get_spans, arginfo_trace_get_spans)
     PHP_FE(trace_set_callback_whitelist, arginfo_trace_set_callback_whitelist)
+    PHP_FE(trace_set_internal_whitelist, arginfo_trace_set_callback_whitelist)
     PHP_FE(trace_reset, arginfo_trace_reset)
     PHP_FE_END
 };
@@ -1230,6 +1230,7 @@ static void php_trace_init_globals(zend_trace_globals *trace_globals)
     ZVAL_UNDEF(&trace_globals->curl_callback);
     ZVAL_UNDEF(&trace_globals->db_callback);
     ZVAL_UNDEF(&trace_globals->trace_whitelist);
+    ZVAL_UNDEF(&trace_globals->internal_trace_whitelist);
 }
 
 // 模块初始化
@@ -1281,6 +1282,7 @@ PHP_RINIT_FUNCTION(trace)
     ZVAL_UNDEF(&TRACE_G(curl_callback));
     ZVAL_UNDEF(&TRACE_G(db_callback));
     ZVAL_UNDEF(&TRACE_G(trace_whitelist));
+    ZVAL_UNDEF(&TRACE_G(internal_trace_whitelist));
     TRACE_G(in_trace_callback) = 0;
     
     if (TRACE_G(enabled)) {
@@ -1367,6 +1369,10 @@ PHP_RSHUTDOWN_FUNCTION(trace)
         zval_dtor(&TRACE_G(trace_whitelist));
         ZVAL_UNDEF(&TRACE_G(trace_whitelist));
     }
+    if (!Z_ISUNDEF(TRACE_G(internal_trace_whitelist))) {
+        zval_dtor(&TRACE_G(internal_trace_whitelist));
+        ZVAL_UNDEF(&TRACE_G(internal_trace_whitelist));
+    }
     
     return SUCCESS;
 }
@@ -1421,14 +1427,27 @@ PHP_MINFO_FUNCTION(trace)
     php_info_print_table_end();
     
     php_info_print_table_start();
-    php_info_print_table_header(2, "Whitelist", "Status");
+    php_info_print_table_header(2, "Whitelist (User Functions)", "Status");
     
     if (!Z_ISUNDEF(TRACE_G(trace_whitelist)) && Z_TYPE(TRACE_G(trace_whitelist)) == IS_ARRAY) {
         char rule_count_str[32];
         snprintf(rule_count_str, sizeof(rule_count_str), "%d rules", zend_hash_num_elements(Z_ARR(TRACE_G(trace_whitelist))));
-        php_info_print_table_row(2, "Rules", rule_count_str);
+        php_info_print_table_row(2, "Rules (file_pattern)", rule_count_str);
     } else {
-        php_info_print_table_row(2, "Rules", "Not set (trace all)");
+        php_info_print_table_row(2, "Rules (file_pattern)", "Not set");
+    }
+    
+    php_info_print_table_end();
+    
+    php_info_print_table_start();
+    php_info_print_table_header(2, "Whitelist (Internal Functions)", "Status");
+    
+    if (!Z_ISUNDEF(TRACE_G(internal_trace_whitelist)) && Z_TYPE(TRACE_G(internal_trace_whitelist)) == IS_ARRAY) {
+        char rule_count_str[32];
+        snprintf(rule_count_str, sizeof(rule_count_str), "%d rules", zend_hash_num_elements(Z_ARR(TRACE_G(internal_trace_whitelist))));
+        php_info_print_table_row(2, "Rules (module_pattern)", rule_count_str);
+    } else {
+        php_info_print_table_row(2, "Rules (module_pattern)", "Not set");
     }
     
     php_info_print_table_end();
