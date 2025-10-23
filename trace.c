@@ -391,11 +391,11 @@ int trace_should_trace_function(zend_execute_data *execute_data)
             // 格式化输出匹配信息
             trace_debug_log("matched: file=%s -> patterns=%s, class=%s -> patterns=%s, function=%s -> patterns=%s", 
                            file_name ? file_name : "(null)", 
-                           file_patterns ? trace_get_pattern_string(file_patterns) : "(null)",
+                           file_patterns ? (char *)trace_get_pattern_string(file_patterns) : "(null)",
                            class_name ? class_name : "(null)", 
-                           class_patterns ? trace_get_pattern_string(class_patterns) : "(null)",
+                           class_patterns ? (char *)trace_get_pattern_string(class_patterns) : "(null)",
                            func_name ? func_name : "(null)", 
-                           func_patterns ? trace_get_pattern_string(func_patterns) : "(null)");
+                           func_patterns ? (char *)trace_get_pattern_string(func_patterns) : "(null)");
             
             // 输出匹配的pattern
             
