@@ -163,6 +163,14 @@ trace_span_t* trace_create_span(const char *operation_name, trace_span_t *parent
         zend_hash_next_index_insert(TRACE_G(all_spans), &span_zval);
     }
     
+    // 记录当前创建的span
+
+        trace_debug_log("创建新span: operation=%s, span_id=%s, parent_id=%s, time=%.6f", 
+                       ZSTR_VAL(span->operation_name), 
+                       ZSTR_VAL(span->span_id), 
+                       span->parent_id ? ZSTR_VAL(span->parent_id) : "NULL",
+                       span->start_time);
+    
     return span;
 }
 
