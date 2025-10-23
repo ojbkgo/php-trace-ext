@@ -327,7 +327,10 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         strncmp(ZSTR_VAL(execute_data->func->common.function_name), "trace_", 6) == 0) {
         return 0;
     }
-    
+    if (execute_data->func->internal_function.module) {
+        module_name = execute_data->func->internal_function.module->name;
+    }
+    trace_debug_log("模块名称: %s", module_name ? module_name : "unknown");
     // 如果是内部函数，检查是否是我们想要跟踪的扩展
     if (execute_data->func->type == ZEND_INTERNAL_FUNCTION) {
         const char *module_name = NULL;
