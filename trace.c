@@ -337,7 +337,8 @@ int trace_should_trace_function(zend_execute_data *execute_data)
             strncasecmp(module_name, "mysqli", 6) != 0 && 
             strncasecmp(module_name, "redis", 5) != 0 && 
             strncasecmp(module_name, "curl", 4) != 0 &&
-            strncasecmp(module_name, "pdo", 3) != 0)) {
+            strncasecmp(module_name, "pdo", 3) != 0 &&
+            strncasecmp(module_name, "pdo_mysql", 9) != 0)) {
             trace_debug_log("不跟踪: 内部函数 (模块: %s)", module_name ? module_name : "unknown");
             return 0;
         }
