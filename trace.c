@@ -238,12 +238,12 @@ int trace_should_trace_function(zend_execute_data *execute_data)
     
     // 如果没有设置白名单，跟踪所有函数
     if (Z_ISUNDEF(g_trace_whitelist)) {
-        return 1;
+        return 0;
     }
     
     // 如果白名单不是数组，跟踪所有函数
     if (Z_TYPE(g_trace_whitelist) != IS_ARRAY) {
-        return 1;
+        return 0;
     }
     
     // 获取函数信息
