@@ -382,13 +382,36 @@ void trace_execute_ex(zend_execute_data *execute_data)
     zval callback_result;
     ZVAL_UNDEF(&callback_result);
     
+    // 获取函数详细信息用于调试
     const char *func_name_debug = NULL;
-    if (execute_data && execute_data->func && execute_data->func->common.function_name) {
-        func_name_debug = ZSTR_VAL(execute_data->func->common.function_name);
+    const char *class_name_debug = NULL;
+    const char *file_name_debug = NULL;
+    int line_number = 0;
+    
+    if (execute_data && execute_data->func) {
+        if (execute_data->func->common.function_name) {
+            func_name_debug = ZSTR_VAL(execute_data->func->common.function_name);
+        }
+        
+        if (execute_data->func->common.scope) {
+            class_name_debug = ZSTR_VAL(execute_data->func->common.scope->name);
+        }
+        
+        if (execute_data->func->type == ZEND_USER_FUNCTION && execute_data->func->op_array.filename) {
+            file_name_debug = ZSTR_VAL(execute_data->func->op_array.filename);
+        }
+        
+        line_number = execute_data->opline ? execute_data->opline->lineno : 0;
     }
     
     // 快速路径：如果没有回调或不需要跟踪，直接执行
     if (!TRACE_G(enabled) || Z_ISUNDEF(g_function_enter_callback) || !trace_should_trace_function(execute_data)) {
+        trace_debug_log("[SKIP] 跳过函数: %s%s%s (在 %s:%d)", 
+                       class_name_debug ? class_name_debug : "", 
+                       class_name_debug ? "::" : "",
+                       func_name_debug ? func_name_debug : "unknown",
+                       file_name_debug ? file_name_debug : "unknown",
+                       line_number);
         original_zend_execute_ex(execute_data);
         return;
     }
@@ -400,7 +423,13 @@ void trace_execute_ex(zend_execute_data *execute_data)
         return;
     }
     
-    trace_debug_log("[TRACE] 函数钩子: %s", func_name_debug ? func_name_debug : "unknown");
+    trace_debug_log("[TRACE] 函数钩子: %s%s%s (在 %s:%d, 参数数量: %d)", 
+                   class_name_debug ? class_name_debug : "", 
+                   class_name_debug ? "::" : "",
+                   func_name_debug ? func_name_debug : "unknown",
+                   file_name_debug ? file_name_debug : "unknown",
+                   line_number,
+                   execute_data ? ZEND_CALL_NUM_ARGS(execute_data) : 0);
     
     // 准备回调参数
     zval args[6];
