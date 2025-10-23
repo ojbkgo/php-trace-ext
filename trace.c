@@ -5,6 +5,7 @@
 #include "php.h"
 #include "php_ini.h"
 #include "ext/standard/info.h"
+#include "SAPI.h"
 #include <sys/time.h>
 #include <stdio.h>
 
@@ -861,12 +862,17 @@ PHP_MINIT_FUNCTION(trace)
     ZVAL_UNDEF(&g_trace_whitelist);
     
     // 只在非CLI模式下启用函数调用钩子
-    if (strcmp(sapi_globals.name, "cli") != 0) {
+    // 检查所有命令行相关的SAPI：cli, phpdbg, embed
+    int is_cli = (strcmp(sapi_module.name, "cli") == 0 ||
+                  strcmp(sapi_module.name, "phpdbg") == 0 ||
+                  strcmp(sapi_module.name, "embed") == 0);
+    
+    if (!is_cli) {
         original_zend_execute_ex = zend_execute_ex;
         zend_execute_ex = trace_execute_ex;
-        trace_debug_log("[INIT] 钩子已安装");
+        trace_debug_log("[INIT] 钩子已安装 (SAPI: %s)", sapi_module.name);
     } else {
-        trace_debug_log("[INIT] CLI模式下不安装钩子");
+        trace_debug_log("[INIT] CLI/调试模式下不安装钩子 (SAPI: %s)", sapi_module.name);
     }
     
     return SUCCESS;
