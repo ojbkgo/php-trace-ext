@@ -383,21 +383,11 @@ int trace_should_trace_function(zend_execute_data *execute_data)
         
         // 如果所有条件都匹配，则跟踪此函数
         if (matched) {
-            // 获取各个pattern用于调试输出
-            zval *file_patterns = zend_hash_str_find(Z_ARR_P(rule), "file_pattern", sizeof("file_pattern") - 1);
-            zval *class_patterns = zend_hash_str_find(Z_ARR_P(rule), "class_pattern", sizeof("class_pattern") - 1);
-            zval *func_patterns = zend_hash_str_find(Z_ARR_P(rule), "function_pattern", sizeof("function_pattern") - 1);
-            
-            // 格式化输出匹配信息
-            trace_debug_log("matched: file=%s -> patterns=%s, class=%s -> patterns=%s, function=%s -> patterns=%s", 
+            // 如果所有条件都匹配，则跟踪此函数
+            trace_debug_log("matched function: file=%s, class=%s, function=%s", 
                            file_name ? file_name : "(null)", 
-                           file_patterns ? (char *)trace_get_pattern_string(file_patterns) : "(null)",
                            class_name ? class_name : "(null)", 
-                           class_patterns ? (char *)trace_get_pattern_string(class_patterns) : "(null)",
-                           func_name ? func_name : "(null)", 
-                           func_patterns ? (char *)trace_get_pattern_string(func_patterns) : "(null)");
-            
-            // 输出匹配的pattern
+                           func_name ? func_name : "(null)");
             
             return 1;
         }
