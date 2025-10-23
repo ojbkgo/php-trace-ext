@@ -861,7 +861,7 @@ PHP_MINIT_FUNCTION(trace)
     ZVAL_UNDEF(&g_trace_whitelist);
     
     // 只在非CLI模式下启用函数调用钩子
-    if (strcmp(sapi_module.name, "cli") != 0) {
+    if (strcmp(sapi_globals.name, "cli") != 0) {
         original_zend_execute_ex = zend_execute_ex;
         zend_execute_ex = trace_execute_ex;
         trace_debug_log("[INIT] 钩子已安装");
