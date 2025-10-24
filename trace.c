@@ -151,18 +151,12 @@ trace_span_t* trace_create_span(const char *operation_name, trace_span_t *parent
     span->end_time = 0.0;
     span->parent = parent;
     
-    // 调试：记录span创建情况
-    if (!parent) {
-        trace_debug_log("[SPAN_CREATE] ⚠️ 创建无父级的span: operation=%s, span_id=%s, current_span=%p, root_span=%p",
+    // 调试：只记录异常情况（parent为空但root_span存在）
+    if (!parent && TRACE_G(root_span)) {
+        trace_debug_log("[SPAN_CREATE] ⚠️ 创建无父级span: %s (current_span=%p, root_span=%p)",
                        operation_name,
-                       ZSTR_VAL(span->span_id),
                        TRACE_G(current_span),
                        TRACE_G(root_span));
-    } else {
-        trace_debug_log("[SPAN_CREATE] ✓ 创建子span: operation=%s, span_id=%s, parent_id=%s",
-                       operation_name,
-                       ZSTR_VAL(span->span_id),
-                       ZSTR_VAL(parent->span_id));
     }
     
     // 初始化tags
@@ -175,6 +169,7 @@ trace_span_t* trace_create_span(const char *operation_name, trace_span_t *parent
     
     if (TRACE_G(all_spans)) {
         zval span_zval;
+        /* 将span指针存储到zval中，以便可以将其添加到all_spans哈希表中 */
         ZVAL_PTR(&span_zval, span);
         zend_hash_next_index_insert(TRACE_G(all_spans), &span_zval);
     }
@@ -536,20 +531,6 @@ void trace_execute_ex(zend_execute_data *execute_data)
         return;
     }
     
-    // 记录即将追踪的函数和当前span状态
-    const char *func_name_dbg = execute_data->func->common.function_name ? 
-                                ZSTR_VAL(execute_data->func->common.function_name) : "anonymous";
-    const char *class_name_dbg = execute_data->func->common.scope ? 
-                                 ZSTR_VAL(execute_data->func->common.scope->name) : NULL;
-    
-    trace_debug_log("[TRACE_ENTER] 开始追踪函数: %s%s%s, current_span=%p, current_span_id=%s",
-                   class_name_dbg ? class_name_dbg : "",
-                   class_name_dbg ? "::" : "",
-                   func_name_dbg,
-                   TRACE_G(current_span),
-                   TRACE_G(current_span) && TRACE_G(current_span)->span_id ? 
-                       ZSTR_VAL(TRACE_G(current_span)->span_id) : "NULL");
-    
     // 获取调用方上下文（caller's context）
     const char *caller_file = NULL;
     int caller_line = 0;
@@ -624,7 +605,6 @@ void trace_execute_ex(zend_execute_data *execute_data)
             span = trace_create_span(Z_STRVAL_P(operation_name), TRACE_G(current_span));
             if (span) {
                 TRACE_G(current_span) = span;
-                trace_debug_log("[CALLBACK] ✓ Span已创建并设置为current_span: %s", Z_STRVAL_P(operation_name));
                 
                 // 处理callback返回的tags
                 zval *tags = zend_hash_str_find(Z_ARR(callback_result), "tags", sizeof("tags") - 1);
@@ -667,13 +647,7 @@ void trace_execute_ex(zend_execute_data *execute_data)
                     } ZEND_HASH_FOREACH_END();
                 }
             }
-        } else {
-            trace_debug_log("[CALLBACK] ⚠️ 回调返回数组但没有operation_name，不创建span");
         }
-    } else {
-        trace_debug_log("[CALLBACK] ⚠️ 回调未返回数组（返回类型=%d），不创建span，current_span保持不变=%p", 
-                       Z_TYPE(callback_result),
-                       TRACE_G(current_span));
     }
     
     // 清理回调参数
@@ -694,12 +668,6 @@ void trace_execute_ex(zend_execute_data *execute_data)
         trace_finish_span(span);
         
         // 恢复父span
-        trace_debug_log("[TRACE_EXIT] 用户函数完成: %s, span_id=%s, 恢复parent=%p, parent_id=%s",
-                       ZSTR_VAL(span->operation_name),
-                       ZSTR_VAL(span->span_id),
-                       span->parent,
-                       span->parent && span->parent->span_id ? ZSTR_VAL(span->parent->span_id) : "NULL");
-        
         TRACE_G(current_span) = span->parent;
         
         // 调用exit回调
@@ -824,23 +792,6 @@ void trace_execute_internal(zend_execute_data *execute_data, zval *return_value)
         return;
     }
     
-    // 记录即将追踪的内部函数和当前span状态
-    const char *func_name_dbg = execute_data->func->common.function_name ? 
-                                ZSTR_VAL(execute_data->func->common.function_name) : "anonymous";
-    const char *class_name_dbg = execute_data->func->common.scope ? 
-                                 ZSTR_VAL(execute_data->func->common.scope->name) : NULL;
-    const char *module_name_dbg = execute_data->func->internal_function.module ? 
-                                  execute_data->func->internal_function.module->name : "unknown";
-    
-    trace_debug_log("[TRACE_ENTER_INTERNAL] 开始追踪内部函数: %s::%s%s%s, current_span=%p, current_span_id=%s",
-                   module_name_dbg,
-                   class_name_dbg ? class_name_dbg : "",
-                   class_name_dbg ? "::" : "",
-                   func_name_dbg,
-                   TRACE_G(current_span),
-                   TRACE_G(current_span) && TRACE_G(current_span)->span_id ? 
-                       ZSTR_VAL(TRACE_G(current_span)->span_id) : "NULL");
-    
     // 获取调用方上下文
     const char *caller_file = NULL;
     int caller_line = 0;
@@ -915,7 +866,6 @@ void trace_execute_internal(zend_execute_data *execute_data, zval *return_value)
             span = trace_create_span(Z_STRVAL_P(operation_name), TRACE_G(current_span));
             if (span) {
                 TRACE_G(current_span) = span;
-                trace_debug_log("[CALLBACK] ✓ Span已创建并设置为current_span: %s", Z_STRVAL_P(operation_name));
                 
                 // 处理callback返回的tags
                 zval *tags = zend_hash_str_find(Z_ARR(callback_result), "tags", sizeof("tags") - 1);
@@ -982,12 +932,6 @@ void trace_execute_internal(zend_execute_data *execute_data, zval *return_value)
         trace_finish_span(span);
         
         // 恢复父span
-        trace_debug_log("[TRACE_EXIT_INTERNAL] 内部函数完成: %s, span_id=%s, 恢复parent=%p, parent_id=%s",
-                       ZSTR_VAL(span->operation_name),
-                       ZSTR_VAL(span->span_id),
-                       span->parent,
-                       span->parent && span->parent->span_id ? ZSTR_VAL(span->parent->span_id) : "NULL");
-        
         TRACE_G(current_span) = span->parent;
         
         // 调用exit回调
@@ -1463,11 +1407,6 @@ PHP_RINIT_FUNCTION(trace)
         
         TRACE_G(root_span) = trace_create_span("http.request", NULL);
         TRACE_G(current_span) = TRACE_G(root_span);
-        
-        trace_debug_log("[RINIT] ✓ 根span已创建: root_span=%p, span_id=%s, current_span=%p",
-                       TRACE_G(root_span),
-                       TRACE_G(root_span) ? ZSTR_VAL(TRACE_G(root_span)->span_id) : "NULL",
-                       TRACE_G(current_span));
     }
     
     return SUCCESS;
