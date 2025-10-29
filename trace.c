@@ -1351,15 +1351,15 @@ PHP_MINIT_FUNCTION(trace)
                   strcmp(sapi_module.name, "phpdbg") == 0 ||
                   strcmp(sapi_module.name, "embed") == 0);
     
-    if (!is_cli) {
-        // Hook 用户函数（PHP代码）
-        original_zend_execute_ex = zend_execute_ex;
-        zend_execute_ex = trace_execute_ex;
-        
-        // Hook 内部函数（扩展函数：mysql、redis、curl等）
-        original_zend_execute_internal = zend_execute_internal;
-        zend_execute_internal = trace_execute_internal;
-    }
+    // if (!is_cli) {
+    // Hook 用户函数（PHP代码）
+    original_zend_execute_ex = zend_execute_ex;
+    zend_execute_ex = trace_execute_ex;
+    
+    // Hook 内部函数（扩展函数：mysql、redis、curl等）
+    original_zend_execute_internal = zend_execute_internal;
+    zend_execute_internal = trace_execute_internal;
+    // }
     
     return SUCCESS;
 }
